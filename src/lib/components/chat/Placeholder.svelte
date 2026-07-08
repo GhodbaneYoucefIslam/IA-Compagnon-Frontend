@@ -42,6 +42,64 @@
 
 	let models = [];
 
+	let oreegamiSuggestions = [
+		// --- LOGISTIQUE, ABSENCES & RETARDS ---
+		{
+			title: ["Absence ou retard", "La marche à suivre"],
+			content: "Je vais avoir du retard (ou une absence) aujourd'hui. Quelles sont les étapes obligatoires à respecter pour prévenir l'école et que se passe-t-il si je n'ai pas de justificatif ?"
+		},
+		{
+			title: ["Problème dans le campus", "Qui contacter"],
+			content: "Qui dois-je contacter en cas de problème pédagiques sur mon campus ?"
+		},
+
+		// --- RECHERCHE D'ALTERNANCE ---
+		{
+			title: ["Trouver mon alternance", "Deadlines et démarches"],
+			content: "Quelles sont les deadlines maximales pour signer mon contrat d'alternance (apprentissage ou professionnalisation) après le Bootcamp, et que dois-je faire dès que j'ai trouvé une entreprise ?"
+		},
+
+		// --- PARCOURS PRO & POSTURE EN ENTREPRISE ---
+		{
+			title: ["Codes de l'entreprise", "Communication et posture"],
+			content: "Je vis une situation stressante ou nouvelle avec mon manager en entreprise et je ne sais pas comment réagir ou formuler ma demande en respectant les codes pros. Peux-tu m'aider ?"
+		},
+		{
+			title: ["Gestion des deadlines", "Stress professionnel"],
+			content: "Je me sens submergé par les deadlines et les responsabilités dans ma boîte d'accueil. Comment puis-je communiquer sainement sur ma charge de travail avec mon tuteur ?"
+		},
+
+		// --- ACADÉMIQUE & ENTRAÎNEMENT ---
+		{
+			title: ["Gestion du temps", "E-learning vs Entreprise"],
+			content: "J'ai du mal à concilier mes tâches au travail et mes 5 heures d'e-learning hebdomadaires obligatoires sur Teach Up. Peux-tu m'aider à organiser mon planning ?"
+		},
+		{
+			title: ["Outils Oreegami", "Slack, Classroom, Teach Up"],
+			content: "Peux-tu me faire un récapitulatif des différents outils utilisés pendant ma formation (Edusign, Classroom, Teach Up, Slack) et de leurs usages principaux ?"
+		},
+		{
+			title: ["Outils IA et automatisation", "Comment choisir"],
+			content: "Peux-tu me faire un récapitulatif des différents outils IA utilisés dans l'automatisation des taches répétitives et comment choisir le meilleur outil selon le problème"
+		},
+
+		// --- ÉVALUATIONS & EXAMENS ---
+		{
+			title: ["Système d'évaluation", "QCM, Hackathons..."],
+			content: "Comment fonctionne le système d'évaluation chez Oreegami pour valider mon titre RNCP Niveau 6 ?"
+		},
+		{
+			title: ["Le Grand Oral", "Préparer la soutenance"],
+			content: "Comment se déroule la soutenance finale (Grand Oral) de 30 minutes, et sur quoi repose l'échange avec le jury ?"
+		},
+
+		// --- CARRIÈRE & LONG TERME ---
+		{
+			title: ["Veille technologique", "Se tenir à jour"],
+			content: "En tant qu'Oreegamer, comment puis-je mettre en place une routine efficace de veille technologique pour mon métier (Marketing Digital ou No-Code/IA) ?"
+		}
+	];
+
 	const selectSuggestionPrompt = async (p) => {
 		let text = p;
 
@@ -214,10 +272,7 @@
 	<div class="mx-auto max-w-2xl font-primary" in:fade={{ duration: 200, delay: 200 }}>
 		<div class="mx-5">
 			<Suggestions
-				suggestionPrompts={atSelectedModel?.info?.meta?.suggestion_prompts ??
-					models[selectedModelIdx]?.info?.meta?.suggestion_prompts ??
-					$config?.default_prompt_suggestions ??
-					[]}
+				suggestionPrompts={oreegamiSuggestions}
 				inputValue={prompt}
 				on:select={(e) => {
 					selectSuggestionPrompt(e.detail);
