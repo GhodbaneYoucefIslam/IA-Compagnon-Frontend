@@ -54,6 +54,8 @@ from open_webui.utils.filter import (
 
 from open_webui.env import SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL, BYPASS_MODEL_ACCESS_CONTROL
 
+from open_webui.utils.memory_collector import extract_and_save_memory
+
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -300,6 +302,11 @@ async def chat_completed(request: Request, form_data: dict, user: Any):
         raise Exception("Model not found")
 
     model = models[model_id]
+
+    # Periodic memory collection task
+    asyncio.create_task(
+        extract_and_save_memory(request, form_data, user, generate_chat_completion)
+    )
 
     try:
         data = await process_pipeline_outlet_filter(request, data, user, models)
