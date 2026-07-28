@@ -79,7 +79,7 @@ async def extract_and_save_memory(
 
         # 5. Create the silent extraction payload
         payload = {
-            "model": form_data["model"],
+            "model": "",
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Conversation:\n{transcript}"}
@@ -88,7 +88,7 @@ async def extract_and_save_memory(
         }
 
         # 6. Ask the LLM (using the passed generation function)
-        response = await generate_completion_func(request, payload, user, bypass_filter=True)
+        response = await generate_completion_func(request, payload, user)
         
         content = ""
         if isinstance(response, dict):

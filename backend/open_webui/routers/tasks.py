@@ -6,7 +6,7 @@ from typing import Optional
 import logging
 import re
 
-from open_webui.utils.chat import generate_chat_completion
+from open_webui.utils.chat import generate_chat_completion, generate_system_completion
 from open_webui.utils.task import (
     title_generation_template,
     query_generation_template,
@@ -232,7 +232,7 @@ async def generate_title(
         raise e
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return await generate_system_completion(request, form_data=payload, user=user)
     except Exception as e:
         log.error("Exception occurred", exc_info=True)
         return JSONResponse(
@@ -307,7 +307,7 @@ async def generate_chat_tags(
         raise e
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return await generate_system_completion(request, form_data=payload, user=user)
     except Exception as e:
         log.error(f"Error generating chat completion: {e}")
         return JSONResponse(

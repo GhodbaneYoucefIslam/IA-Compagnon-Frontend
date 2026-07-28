@@ -1,6 +1,7 @@
 import time
 import logging
 import sys
+import os
 
 from aiocache import cached
 from typing import Any, Optional
@@ -9,6 +10,7 @@ import json
 import inspect
 import uuid
 import asyncio
+import httpx
 
 from fastapi import Request, status
 from starlette.responses import Response, StreamingResponse, JSONResponse
@@ -284,6 +286,51 @@ async def generate_chat_completion(
 
 chat_completion = generate_chat_completion
 
+# Handles LLM API calls for background system tasks
+
+async def generate_system_completion(
+    request: Request,
+    form_data: dict,
+    user: Any,
+):
+    print("generate system completions invoked from front")
+    # 1. Removing metadata if it exists
+    form_data.pop("metadata", None)
+
+    # 2. Add user identification for LiteLLM analytics tracking
+    if "user" not in form_data and hasattr(user, "id"):
+        form_data["user"] = user.id
+
+    # 3. Connection Setup
+    config = request.app.state.config
+
+    base_url = os.environ.get("OPENAI_API_BASE_URL", "")
+    system_endpoint = f"{base_url}/system/completions"
+    print(system_endpoint)
+
+    # Prepare Authentication Headers
+    headers = {"Content-Type": "application/json"}
+
+    # 4. Execute the direct HTTP request
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                system_endpoint,
+                json=form_data,
+                headers=headers,
+                timeout=60.0  # Background tasks can safely have a longer timeout
+            )
+            response.raise_for_status()
+            return response.json()
+            
+    except httpx.HTTPError as e:
+        error_msg = f"System API HTTP error: {str(e)}"
+        log.error(error_msg)
+        raise Exception(error_msg)
+    except Exception as e:
+        error_msg = f"Unexpected error during system completion: {str(e)}"
+        log.error(error_msg)
+        raise Exception(error_msg)
 
 async def chat_completed(request: Request, form_data: dict, user: Any):
     if not request.app.state.MODELS:
@@ -305,7 +352,7 @@ async def chat_completed(request: Request, form_data: dict, user: Any):
 
     # Periodic memory collection task
     asyncio.create_task(
-        extract_and_save_memory(request, form_data, user, generate_chat_completion)
+        extract_and_save_memory(request, form_data, user, generate_system_completion)
     )
 
     try:
