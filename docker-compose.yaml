@@ -25,6 +25,13 @@ services:
     environment:
       - 'OLLAMA_BASE_URL=http://ollama:11434'
       - 'WEBUI_SECRET_KEY='
+      - 'AIRTABLE_SYNC_ENABLED=${AIRTABLE_SYNC_ENABLED-false}'
+      - 'AIRTABLE_API_TOKEN=${AIRTABLE_API_TOKEN-}'
+      - 'AIRTABLE_BASE_ID=${AIRTABLE_BASE_ID-}'
+      - 'AIRTABLE_TABLE_ID=${AIRTABLE_TABLE_ID-}'
+      - 'AIRTABLE_VIEW=${AIRTABLE_VIEW-}'
+      - 'AIRTABLE_SYNC_INTERVAL_SECONDS=${AIRTABLE_SYNC_INTERVAL_SECONDS-3600}'
+      - 'AIRTABLE_REQUEST_TIMEOUT_SECONDS=${AIRTABLE_REQUEST_TIMEOUT_SECONDS-30}'
     extra_hosts:
       - host.docker.internal:host-gateway
     restart: unless-stopped

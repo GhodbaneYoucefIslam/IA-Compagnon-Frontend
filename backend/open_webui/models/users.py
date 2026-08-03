@@ -1,4 +1,5 @@
 import time
+from datetime import date
 from typing import Optional
 
 from open_webui.internal.db import Base, JSONField, get_db
@@ -9,7 +10,7 @@ from open_webui.models.groups import Groups
 
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import BigInteger, Column, String, Text
+from sqlalchemy import BigInteger, Column, Date, String, Text, func, or_
 
 ####################
 # User DB Schema
@@ -35,6 +36,17 @@ class User(Base):
 
     oauth_sub = Column(Text, unique=True)
 
+    last_name = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)
+    gender = Column(String, nullable=True)
+    oreegami_edu_email = Column(String, nullable=True)
+    campus_region = Column(String, nullable=True)
+    session = Column(String, nullable=True)
+    rncp_title = Column(String, nullable=True)
+    apprenticeship_company = Column(String, nullable=True)
+    apprenticeship_start_date = Column(Date, nullable=True)
+    apprenticeship_end_date = Column(Date, nullable=True)
+
 
 class UserSettings(BaseModel):
     ui: Optional[dict] = {}
@@ -58,6 +70,17 @@ class UserModel(BaseModel):
     info: Optional[dict] = None
 
     oauth_sub: Optional[str] = None
+
+    last_name: Optional[str] = None
+    first_name: Optional[str] = None
+    gender: Optional[str] = None
+    oreegami_edu_email: Optional[str] = None
+    campus_region: Optional[str] = None
+    session: Optional[str] = None
+    rncp_title: Optional[str] = None
+    apprenticeship_company: Optional[str] = None
+    apprenticeship_start_date: Optional[date] = None
+    apprenticeship_end_date: Optional[date] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -95,6 +118,19 @@ class UserUpdateForm(BaseModel):
 
 
 class UsersTable:
+    AIRTABLE_PROFILE_FIELDS = {
+        "last_name",
+        "first_name",
+        "gender",
+        "oreegami_edu_email",
+        "campus_region",
+        "session",
+        "rncp_title",
+        "apprenticeship_company",
+        "apprenticeship_start_date",
+        "apprenticeship_end_date",
+    }
+
     def insert_new_user(
         self,
         id: str,
@@ -270,6 +306,45 @@ class UsersTable:
                 # return UserModel(**user.dict())
         except Exception:
             return None
+
+    def update_user_from_airtable_by_email(
+        self, email: str, profile: dict
+    ) -> tuple[Optional[UserModel], bool]:
+        normalized_email = email.strip().lower()
+        if not normalized_email:
+            return None, False
+
+        updated = {
+            key: value
+            for key, value in profile.items()
+            if key in self.AIRTABLE_PROFILE_FIELDS
+        }
+
+        with get_db() as db:
+            users = (
+                db.query(User)
+                .filter(
+                    or_(
+                        func.lower(User.email) == normalized_email,
+                        func.lower(User.oreegami_edu_email) == normalized_email,
+                    )
+                )
+                .limit(2)
+                .all()
+            )
+            if len(users) != 1:
+                return None, False
+
+            user = users[0]
+            changed = any(getattr(user, key) != value for key, value in updated.items())
+            if changed:
+                for key, value in updated.items():
+                    setattr(user, key, value)
+                user.updated_at = int(time.time())
+                db.commit()
+                db.refresh(user)
+
+            return UserModel.model_validate(user), changed
 
     def update_user_settings_by_id(self, id: str, updated: dict) -> Optional[UserModel]:
         try:

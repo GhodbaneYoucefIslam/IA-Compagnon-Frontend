@@ -9,7 +9,7 @@ import sys
 import time
 import random
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from urllib.parse import urlencode, parse_qs, urlparse
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -90,6 +90,7 @@ from open_webui.models.functions import Functions
 from open_webui.models.models import Models
 from open_webui.models.users import UserModel, Users
 from open_webui.models.chats import Chats
+from open_webui.integrations.airtable import periodic_airtable_user_sync
 
 from open_webui.config import (
     LICENSE_KEY,
@@ -347,6 +348,7 @@ from open_webui.env import (
     OFFLINE_MODE,
     ENABLE_OTEL,
     EXTERNAL_PWA_MANIFEST_URL,
+    AIRTABLE_SYNC_ENABLED,
 )
 
 
@@ -433,7 +435,17 @@ async def lifespan(app: FastAPI):
         get_license_data(app, LICENSE_KEY)
 
     asyncio.create_task(periodic_usage_pool_cleanup())
-    yield
+    airtable_sync_task = None
+    if AIRTABLE_SYNC_ENABLED:
+        airtable_sync_task = asyncio.create_task(periodic_airtable_user_sync())
+
+    try:
+        yield
+    finally:
+        if airtable_sync_task:
+            airtable_sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await airtable_sync_task
 
 
 app = FastAPI(

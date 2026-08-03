@@ -1,3 +1,5 @@
+from datetime import date
+
 from test.util.abstract_integration_test import AbstractPostgresTest
 from test.util.mock_user import mock_webui_user
 
@@ -165,3 +167,33 @@ class TestUsers(AbstractPostgresTest):
         assert len(response.json()) == 1
         data = response.json()
         _assert_user(data, "1")
+
+    def test_update_user_from_airtable_by_email(self):
+        profile = {
+            "last_name": "Dupont",
+            "first_name": "Élodie",
+            "gender": "Femme",
+            "oreegami_edu_email": "user1@openwebui.com",
+            "campus_region": "Occitanie",
+            "session": "2026",
+            "rncp_title": "Expert en IA",
+            "apprenticeship_company": "ODYSS'IA",
+            "apprenticeship_start_date": date(2026, 9, 1),
+            "apprenticeship_end_date": date(2027, 8, 31),
+        }
+
+        user, changed = self.users.update_user_from_airtable_by_email(
+            "USER1@OPENWEBUI.COM", profile
+        )
+
+        assert changed is True
+        assert user is not None
+        assert user.last_name == "Dupont"
+        assert user.first_name == "Élodie"
+        assert user.apprenticeship_start_date == date(2026, 9, 1)
+        assert user.apprenticeship_end_date == date(2027, 8, 31)
+
+        _, changed = self.users.update_user_from_airtable_by_email(
+            "user1@openwebui.com", profile
+        )
+        assert changed is False

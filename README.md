@@ -1,6 +1,8 @@
 # IA-Compagnon-Frontend (Open WebUI)
 Customised version of open webui for Oreegami's IA Compagnon, forked from open webui [version 0.6.5](https://github.com/open-webui/open-webui/tree/v0.6.5)
 
+Oreegami-specific setup: [periodic Airtable user synchronization](docs/airtable-user-sync.md).
+
 
 ## Key Features of Open WebUI ⭐
 
