@@ -8,24 +8,46 @@ delete accounts.
 
 ## Field mapping
 
-| Airtable column | Open WebUI `user` column | Type |
-| --- | --- | --- |
-| `Nom` | `last_name` | text |
-| `Prénom` | `first_name` | text |
-| `Genre` | `gender` | text |
-| `mail oreegami edu` | `oreegami_edu_email` | text |
-| `Région du campus` | `campus_region` | text |
-| `Session` | `session` | text |
-| `Titre RNCP` | `rncp_title` | text |
-| `Nom Entreprise d'alternance` | `apprenticeship_company` | text |
-| `Début Alternance` | `apprenticeship_start_date` | date |
-| `Fin Alternance` | `apprenticeship_end_date` | date |
+| Airtable column               | Open WebUI `user` column    | Type |
+| ----------------------------- | --------------------------- | ---- |
+| `Nom`                         | `last_name`                 | text |
+| `Prénom`                      | `first_name`                | text |
+| `Genre`                       | `gender`                    | text |
+| `mail oreegami edu`           | `oreegami_edu_email`        | text |
+| `Région du campus`            | `campus_region`             | text |
+| `Session`                     | `session`                   | text |
+| `Titre RNCP`                  | `rncp_title`                | text |
+| `Nom Entreprise d'alternance` | `apprenticeship_company`    | text |
+| `Début Alternance`            | `apprenticeship_start_date` | date |
+| `Fin Alternance`              | `apprenticeship_end_date`   | date |
 
 Empty Airtable cells clear the corresponding Open WebUI value. Records without
 an Oreegami Edu email, records with invalid dates, and duplicate records sharing
 the same Oreegami Edu email are skipped. Unmatched records are left untouched so
 that authentication data is never created without the normal Open WebUI signup
 or SSO flow.
+
+## CRUD interfaces
+
+The ten profile fields are available in every user write path:
+
+- self-service signup and account settings;
+- administrator user creation and editing;
+- administrator CSV import;
+- `POST /api/v1/auths/signup`, `POST /api/v1/auths/add`,
+  `POST /api/v1/auths/update/profile`, and
+  `POST /api/v1/users/{user_id}/update`.
+
+The administrator user list groups the fields by identity, campus/session,
+RNCP title, and apprenticeship, and its search covers all ten values. The CSV
+template is served at `/static/user-import.csv`; it keeps the four legacy
+columns first, followed by the ten fields in the mapping order above. Dates use
+ISO `YYYY-MM-DD` values. Empty strings are stored as `NULL`, email matching is
+case-insensitive, and an apprenticeship end date before its start date is
+rejected.
+
+When periodic synchronization is enabled, Airtable remains the source of truth:
+a later sync can overwrite values changed manually in an interface.
 
 ## Configuration
 

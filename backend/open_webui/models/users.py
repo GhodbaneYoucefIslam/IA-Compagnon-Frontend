@@ -9,7 +9,7 @@ from open_webui.models.chats import Chats
 from open_webui.models.groups import Groups
 
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from sqlalchemy import BigInteger, Column, Date, String, Text, func, or_
 
 ####################
@@ -54,7 +54,71 @@ class UserSettings(BaseModel):
     pass
 
 
-class UserModel(BaseModel):
+USER_PROFILE_FIELDS = frozenset(
+    {
+        "last_name",
+        "first_name",
+        "gender",
+        "oreegami_edu_email",
+        "campus_region",
+        "session",
+        "rncp_title",
+        "apprenticeship_company",
+        "apprenticeship_start_date",
+        "apprenticeship_end_date",
+    }
+)
+
+USER_PROFILE_STRING_FIELDS = tuple(
+    USER_PROFILE_FIELDS
+    - {"apprenticeship_start_date", "apprenticeship_end_date"}
+)
+
+
+class UserProfileFields(BaseModel):
+    last_name: Optional[str] = None
+    first_name: Optional[str] = None
+    gender: Optional[str] = None
+    oreegami_edu_email: Optional[str] = None
+    campus_region: Optional[str] = None
+    session: Optional[str] = None
+    rncp_title: Optional[str] = None
+    apprenticeship_company: Optional[str] = None
+    apprenticeship_start_date: Optional[date] = None
+    apprenticeship_end_date: Optional[date] = None
+
+    @field_validator(*USER_PROFILE_STRING_FIELDS, mode="before")
+    @classmethod
+    def normalize_optional_strings(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+    @field_validator("oreegami_edu_email")
+    @classmethod
+    def normalize_oreegami_email(cls, value):
+        return value.lower() if value else None
+
+    @model_validator(mode="after")
+    def validate_apprenticeship_dates(self):
+        if (
+            self.apprenticeship_start_date
+            and self.apprenticeship_end_date
+            and self.apprenticeship_end_date < self.apprenticeship_start_date
+        ):
+            raise ValueError(
+                "apprenticeship_end_date must be on or after apprenticeship_start_date"
+            )
+        return self
+
+    def profile_dump(self, *, exclude_unset: bool = False) -> dict:
+        return self.model_dump(
+            include=USER_PROFILE_FIELDS, exclude_unset=exclude_unset
+        )
+
+
+class UserModel(UserProfileFields):
     id: str
     name: str
     email: str
@@ -70,17 +134,6 @@ class UserModel(BaseModel):
     info: Optional[dict] = None
 
     oauth_sub: Optional[str] = None
-
-    last_name: Optional[str] = None
-    first_name: Optional[str] = None
-    gender: Optional[str] = None
-    oreegami_edu_email: Optional[str] = None
-    campus_region: Optional[str] = None
-    session: Optional[str] = None
-    rncp_title: Optional[str] = None
-    apprenticeship_company: Optional[str] = None
-    apprenticeship_start_date: Optional[date] = None
-    apprenticeship_end_date: Optional[date] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -110,7 +163,7 @@ class UserRoleUpdateForm(BaseModel):
     role: str
 
 
-class UserUpdateForm(BaseModel):
+class UserUpdateForm(UserProfileFields):
     name: str
     email: str
     profile_image_url: str
@@ -118,18 +171,8 @@ class UserUpdateForm(BaseModel):
 
 
 class UsersTable:
-    AIRTABLE_PROFILE_FIELDS = {
-        "last_name",
-        "first_name",
-        "gender",
-        "oreegami_edu_email",
-        "campus_region",
-        "session",
-        "rncp_title",
-        "apprenticeship_company",
-        "apprenticeship_start_date",
-        "apprenticeship_end_date",
-    }
+    USER_PROFILE_FIELDS = USER_PROFILE_FIELDS
+    AIRTABLE_PROFILE_FIELDS = USER_PROFILE_FIELDS
 
     def insert_new_user(
         self,
@@ -139,8 +182,10 @@ class UsersTable:
         profile_image_url: str = "/user.png",
         role: str = "pending",
         oauth_sub: Optional[str] = None,
+        profile: Optional[dict] = None,
     ) -> Optional[UserModel]:
         with get_db() as db:
+            profile = UserProfileFields(**(profile or {})).profile_dump()
             user = UserModel(
                 **{
                     "id": id,
@@ -152,6 +197,7 @@ class UsersTable:
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
                     "oauth_sub": oauth_sub,
+                    **profile,
                 }
             )
             result = User(**user.model_dump())
@@ -186,6 +232,24 @@ class UsersTable:
                 return UserModel.model_validate(user)
         except Exception:
             return None
+
+    def is_email_used_by_another_user(
+        self, email: str, user_id: Optional[str] = None
+    ) -> bool:
+        normalized_email = email.strip().lower()
+        if not normalized_email:
+            return False
+
+        with get_db() as db:
+            query = db.query(User.id).filter(
+                or_(
+                    func.lower(User.email) == normalized_email,
+                    func.lower(User.oreegami_edu_email) == normalized_email,
+                )
+            )
+            if user_id:
+                query = query.filter(User.id != user_id)
+            return query.first() is not None
 
     def get_user_by_oauth_sub(self, sub: str) -> Optional[UserModel]:
         try:
@@ -314,9 +378,10 @@ class UsersTable:
         if not normalized_email:
             return None, False
 
+        validated_profile = UserProfileFields(**profile).profile_dump()
         updated = {
-            key: value
-            for key, value in profile.items()
+            key: validated_profile[key]
+            for key in profile
             if key in self.AIRTABLE_PROFILE_FIELDS
         }
 

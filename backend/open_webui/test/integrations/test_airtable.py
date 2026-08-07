@@ -54,6 +54,19 @@ def test_airtable_record_to_user_profile_rejects_invalid_date():
         )
 
 
+def test_airtable_record_to_user_profile_rejects_inverted_date_range():
+    with pytest.raises(ValueError, match="end date is before its start date"):
+        airtable.airtable_record_to_user_profile(
+            _record(
+                **{
+                    "mail oreegami edu": "student@oreegami.com",
+                    "Début Alternance": "2027-09-01",
+                    "Fin Alternance": "2027-08-31",
+                }
+            )
+        )
+
+
 def test_sync_airtable_users_counts_results(monkeypatch):
     records = [
         _record(**{"mail oreegami edu": "updated@oreegami.com"}),

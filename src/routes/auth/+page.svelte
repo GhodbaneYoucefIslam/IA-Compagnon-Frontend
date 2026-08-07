@@ -15,6 +15,8 @@
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import OnBoarding from '$lib/components/OnBoarding.svelte';
+	import UserProfileFields from '$lib/components/common/UserProfileFields.svelte';
+	import { createUserProfileForm } from '$lib/types/user';
 
 	let loaded = false;
 	let passwordVisible = false;
@@ -24,6 +26,7 @@
 	let name = '';
 	let email = '';
 	let password = '';
+	let profile = createUserProfileForm();
 
 	let ldapUsername = '';
 
@@ -68,15 +71,19 @@
 	};
 
 	const signUpHandler = async () => {
-		const sessionUser = await userSignUp(name, email, password, generateInitialsImage(name)).catch(
-			(error) => {
+		const sessionUser = await userSignUp(
+			name,
+			email,
+			password,
+			generateInitialsImage(name),
+			profile
+		).catch((error) => {
 				showAuthError(
 					error,
 					'Création du compte impossible. Vérifiez les informations saisies.'
 				);
 				return null;
-			}
-		);
+			});
 
 		await setSessionUser(sessionUser);
 	};
@@ -348,6 +355,21 @@
 											</button>
 										{/if}
 									</div>
+
+									{#if mode === 'signup'}
+										<details
+											class="profile-details"
+										>
+											<summary>Compléter mon profil Oreegami</summary>
+											<div class="profile-fields">
+												<UserProfileFields
+													{profile}
+													title="Informations personnelles et parcours"
+													bordered={false}
+												/>
+											</div>
+										</details>
+									{/if}
 
 									<button class="primary-button" type="submit">
 										{#if mode === 'ldap'}
@@ -745,6 +767,26 @@
 	.mode-switch button:hover,
 	.ldap-switch:hover {
 		text-decoration: underline;
+	}
+
+	.profile-details {
+		border: 1px solid var(--oreegami-ink-10);
+		border-radius: 10px;
+		background: #fff;
+		text-align: left;
+	}
+
+	.profile-details summary {
+		padding: 12px 14px;
+		cursor: pointer;
+		font-size: 14px;
+		font-weight: 600;
+	}
+
+	.profile-fields {
+		max-height: 52vh;
+		overflow-y: auto;
+		padding: 0 8px 12px;
 	}
 
 	.primary-button {

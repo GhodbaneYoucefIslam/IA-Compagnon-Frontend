@@ -58,6 +58,21 @@ router = APIRouter()
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
 
+
+def validate_oreegami_edu_email(
+    email: Optional[str], user_id: Optional[str] = None
+) -> None:
+    if email and not validate_email_format(email):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT
+        )
+    if email and Users.is_email_used_by_another_user(email, user_id):
+        raise HTTPException(400, detail=ERROR_MESSAGES.EMAIL_TAKEN)
+
+
+def user_response_payload(user) -> dict:
+    return UserResponse.model_validate(user).model_dump()
+
 ############################
 # GetSessionUser
 ############################
@@ -106,11 +121,7 @@ async def get_session_user(
         "token": token,
         "token_type": "Bearer",
         "expires_at": expires_at,
-        "id": user.id,
-        "email": user.email,
-        "name": user.name,
-        "role": user.role,
-        "profile_image_url": user.profile_image_url,
+        **user_response_payload(user),
         "permissions": user_permissions,
     }
 
@@ -125,9 +136,16 @@ async def update_profile(
     form_data: UpdateProfileForm, session_user=Depends(get_verified_user)
 ):
     if session_user:
+        validate_oreegami_edu_email(
+            form_data.oreegami_edu_email, session_user.id
+        )
         user = Users.update_user_by_id(
             session_user.id,
-            {"profile_image_url": form_data.profile_image_url, "name": form_data.name},
+            {
+                "profile_image_url": form_data.profile_image_url,
+                "name": form_data.name,
+                **form_data.profile_dump(exclude_unset=True),
+            },
         )
         if user:
             return user
@@ -320,11 +338,7 @@ async def ldap_auth(request: Request, response: Response, form_data: LdapForm):
                 return {
                     "token": token,
                     "token_type": "Bearer",
-                    "id": user.id,
-                    "email": user.email,
-                    "name": user.name,
-                    "role": user.role,
-                    "profile_image_url": user.profile_image_url,
+                    **user_response_payload(user),
                     "permissions": user_permissions,
                 }
             else:
@@ -418,11 +432,7 @@ async def signin(request: Request, response: Response, form_data: SigninForm):
             "token": token,
             "token_type": "Bearer",
             "expires_at": expires_at,
-            "id": user.id,
-            "email": user.email,
-            "name": user.name,
-            "role": user.role,
-            "profile_image_url": user.profile_image_url,
+            **user_response_payload(user),
             "permissions": user_permissions,
         }
     else:
@@ -456,8 +466,9 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT
         )
+    validate_oreegami_edu_email(form_data.oreegami_edu_email)
 
-    if Users.get_user_by_email(form_data.email.lower()):
+    if Users.is_email_used_by_another_user(form_data.email):
         raise HTTPException(400, detail=ERROR_MESSAGES.EMAIL_TAKEN)
 
     try:
@@ -483,6 +494,7 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
             form_data.name,
             form_data.profile_image_url,
             role,
+            profile=form_data.profile_dump(),
         )
 
         # --- Default settings for users (activate memory in personalisation section) ---
@@ -544,11 +556,7 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
                 "token": token,
                 "token_type": "Bearer",
                 "expires_at": expires_at,
-                "id": user.id,
-                "email": user.email,
-                "name": user.name,
-                "role": user.role,
-                "profile_image_url": user.profile_image_url,
+                **user_response_payload(user),
                 "permissions": user_permissions,
             }
         else:
@@ -603,8 +611,9 @@ async def add_user(form_data: AddUserForm, user=Depends(get_admin_user)):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT
         )
+    validate_oreegami_edu_email(form_data.oreegami_edu_email)
 
-    if Users.get_user_by_email(form_data.email.lower()):
+    if Users.is_email_used_by_another_user(form_data.email):
         raise HTTPException(400, detail=ERROR_MESSAGES.EMAIL_TAKEN)
 
     try:
@@ -615,6 +624,7 @@ async def add_user(form_data: AddUserForm, user=Depends(get_admin_user)):
             form_data.name,
             form_data.profile_image_url,
             form_data.role,
+            profile=form_data.profile_dump(),
         )
 
         # --- Default settings for users (activate memory in personalisation section) ---
@@ -634,11 +644,7 @@ async def add_user(form_data: AddUserForm, user=Depends(get_admin_user)):
             return {
                 "token": token,
                 "token_type": "Bearer",
-                "id": user.id,
-                "email": user.email,
-                "name": user.name,
-                "role": user.role,
-                "profile_image_url": user.profile_image_url,
+                **user_response_payload(user),
             }
         else:
             raise HTTPException(500, detail=ERROR_MESSAGES.CREATE_USER_ERROR)

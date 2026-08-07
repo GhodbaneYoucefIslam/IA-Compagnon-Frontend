@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from open_webui.utils.auth import get_admin_user, get_password_hash, get_verified_user
 from open_webui.utils.access_control import get_permissions
+from open_webui.utils.misc import validate_email_format
 
 
 log = logging.getLogger(__name__)
@@ -291,9 +292,30 @@ async def update_user_by_id(
     user = Users.get_user_by_id(user_id)
 
     if user:
+        if not validate_email_format(form_data.email.lower()):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT,
+            )
+
+        if form_data.oreegami_edu_email and not validate_email_format(
+            form_data.oreegami_edu_email
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT,
+            )
+
+        if Users.is_email_used_by_another_user(
+            form_data.oreegami_edu_email or "", user_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ERROR_MESSAGES.EMAIL_TAKEN,
+            )
+
         if form_data.email.lower() != user.email:
-            email_user = Users.get_user_by_email(form_data.email.lower())
-            if email_user:
+            if Users.is_email_used_by_another_user(form_data.email, user_id):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ERROR_MESSAGES.EMAIL_TAKEN,
@@ -311,6 +333,7 @@ async def update_user_by_id(
                 "name": form_data.name,
                 "email": form_data.email.lower(),
                 "profile_image_url": form_data.profile_image_url,
+                **form_data.profile_dump(exclude_unset=True),
             },
         )
 

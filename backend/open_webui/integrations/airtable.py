@@ -106,6 +106,14 @@ def airtable_record_to_user_profile(record: dict[str, Any]) -> dict[str, Any]:
     if profile["oreegami_edu_email"]:
         profile["oreegami_edu_email"] = profile["oreegami_edu_email"].lower()
 
+    if (
+        profile["apprenticeship_start_date"]
+        and profile["apprenticeship_end_date"]
+        and profile["apprenticeship_end_date"]
+        < profile["apprenticeship_start_date"]
+    ):
+        raise ValueError("Airtable apprenticeship end date is before its start date")
+
     return profile
 
 
