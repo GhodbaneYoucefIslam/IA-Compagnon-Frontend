@@ -2,6 +2,7 @@ import { APP_NAME } from '$lib/constants';
 import { type Writable, writable } from 'svelte/store';
 import type { ModelConfig } from '$lib/apis';
 import type { Banner } from '$lib/types';
+import type { UserProfileFields } from '$lib/types/user';
 import type { Socket } from 'socket.io-client';
 
 import emojiShortCodes from '$lib/emoji-shortcodes.json';
@@ -226,7 +227,7 @@ type PromptSuggestion = {
 	title: [string, string];
 };
 
-type SessionUser = {
+type SessionUser = UserProfileFields & {
 	id: string;
 	email: string;
 	name: string;

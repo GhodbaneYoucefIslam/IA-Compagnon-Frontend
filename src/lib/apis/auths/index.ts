@@ -1,4 +1,13 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
+import { createUserProfilePayload, type UserProfileFields } from '$lib/types/user';
+
+export type AddUserForm = UserProfileFields & {
+	name: string;
+	email: string;
+	password: string;
+	role: string;
+	profile_image_url?: string;
+};
 
 export const getAdminDetails = async (token: string) => {
 	let error = null;
@@ -290,7 +299,8 @@ export const userSignUp = async (
 	name: string,
 	email: string,
 	password: string,
-	profile_image_url: string
+	profile_image_url: string,
+	profile?: UserProfileFields
 ) => {
 	let error = null;
 
@@ -304,7 +314,8 @@ export const userSignUp = async (
 			name: name,
 			email: email,
 			password: password,
-			profile_image_url: profile_image_url
+			profile_image_url: profile_image_url,
+			...(profile ? createUserProfilePayload(profile) : {})
 		})
 	})
 		.then(async (res) => {
@@ -349,13 +360,7 @@ export const userSignOut = async () => {
 	}
 };
 
-export const addUser = async (
-	token: string,
-	name: string,
-	email: string,
-	password: string,
-	role: string = 'pending'
-) => {
+export const addUser = async (token: string, user: AddUserForm) => {
 	let error = null;
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/auths/add`, {
@@ -365,10 +370,8 @@ export const addUser = async (
 			...(token && { authorization: `Bearer ${token}` })
 		},
 		body: JSON.stringify({
-			name: name,
-			email: email,
-			password: password,
-			role: role
+			...user,
+			...createUserProfilePayload(user)
 		})
 	})
 		.then(async (res) => {
@@ -388,7 +391,12 @@ export const addUser = async (
 	return res;
 };
 
-export const updateUserProfile = async (token: string, name: string, profileImageUrl: string) => {
+export const updateUserProfile = async (
+	token: string,
+	name: string,
+	profileImageUrl: string,
+	profile?: UserProfileFields
+) => {
 	let error = null;
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/auths/update/profile`, {
@@ -399,7 +407,8 @@ export const updateUserProfile = async (token: string, name: string, profileImag
 		},
 		body: JSON.stringify({
 			name: name,
-			profile_image_url: profileImageUrl
+			profile_image_url: profileImageUrl,
+			...(profile ? createUserProfilePayload(profile) : {})
 		})
 	})
 		.then(async (res) => {

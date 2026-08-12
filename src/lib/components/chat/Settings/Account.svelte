@@ -12,14 +12,17 @@
 	import Plus from '$lib/components/icons/Plus.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
+	import UserProfileFields from '$lib/components/common/UserProfileFields.svelte';
+	import { createUserProfileForm } from '$lib/types/user';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	export let saveHandler: Function;
 	export let saveSettings: Function;
 
 	let profileImageUrl = '';
 	let name = '';
+	let profile = createUserProfileForm();
 
 	let webhookUrl = '';
 	let showAPIKeys = false;
@@ -46,11 +49,14 @@
 			});
 		}
 
-		const updatedUser = await updateUserProfile(localStorage.token, name, profileImageUrl).catch(
-			(error) => {
-				toast.error(`${error}`);
-			}
-		);
+		const updatedUser = await updateUserProfile(
+			localStorage.token,
+			name,
+			profileImageUrl,
+			profile
+		).catch((error) => {
+			toast.error(`${error}`);
+		});
 
 		if (updatedUser) {
 			// Get Session User Info
@@ -75,8 +81,9 @@
 	};
 
 	onMount(async () => {
-		name = $user?.name;
-		profileImageUrl = $user?.profile_image_url;
+		name = $user?.name ?? '';
+		profileImageUrl = $user?.profile_image_url ?? '';
+		profile = createUserProfileForm($user);
 		webhookUrl = $settings?.notifications?.webhook_url ?? '';
 
 		APIKey = await getAPIKey(localStorage.token).catch((error) => {
@@ -245,6 +252,20 @@
 					</div>
 				</div>
 			</div>
+
+			<details class="mt-3 rounded-xl border border-gray-100 dark:border-gray-850">
+				<summary class="cursor-pointer px-3 py-2 text-sm font-medium"> Profil Oreegami </summary>
+				<div class="px-1 pb-2">
+					<UserProfileFields
+						{profile}
+						title="Informations personnelles et parcours"
+						bordered={false}
+					/>
+					<p class="px-3 text-xs text-gray-500">
+						Ces informations peuvent être actualisées automatiquement depuis Airtable.
+					</p>
+				</div>
+			</details>
 			{#if $user?.role === 'admin'}
 				{#if $config?.features?.enable_user_webhooks}
 					<div class="pt-2">

@@ -1,15 +1,16 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import dayjs from 'dayjs';
-	import { createEventDispatcher } from 'svelte';
-	import { onMount, getContext } from 'svelte';
+	import localizedFormat from 'dayjs/plugin/localizedFormat';
+	import { createEventDispatcher, getContext, onMount } from 'svelte';
 
-	import { updateUserById } from '$lib/apis/users';
+	import { updateUserById, type UserUpdateForm } from '$lib/apis/users';
+	import { createUserProfileForm, type UserProfileForm } from '$lib/types/user';
 
 	import Modal from '$lib/components/common/Modal.svelte';
-	import localizedFormat from 'dayjs/plugin/localizedFormat';
+	import UserProfileFields from '$lib/components/common/UserProfileFields.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 	const dispatch = createEventDispatcher();
 	dayjs.extend(localizedFormat);
 
@@ -17,17 +18,22 @@
 	export let selectedUser;
 	export let sessionUser;
 
-	let _user = {
-		profile_image_url: '',
+	let loading = false;
+	let _user: UserUpdateForm & UserProfileForm = {
+		profile_image_url: '/user.png',
 		name: '',
 		email: '',
-		password: ''
+		password: '',
+		...createUserProfileForm()
 	};
 
 	const submitHandler = async () => {
+		loading = true;
 		const res = await updateUserById(localStorage.token, selectedUser.id, _user).catch((error) => {
 			toast.error(`${error}`);
+			return null;
 		});
+		loading = false;
 
 		if (res) {
 			dispatch('save');
@@ -37,27 +43,27 @@
 
 	onMount(() => {
 		if (selectedUser) {
-			_user = selectedUser;
-			_user.password = '';
+			_user = {
+				profile_image_url: selectedUser.profile_image_url ?? '/user.png',
+				name: selectedUser.name ?? '',
+				email: selectedUser.email ?? '',
+				password: '',
+				...createUserProfileForm(selectedUser)
+			};
 		}
 	});
 </script>
 
-<Modal size="sm" bind:show>
-	<div>
-		<div class=" flex justify-between dark:text-gray-300 px-5 py-4">
-			<div class=" text-lg font-medium self-center">{$i18n.t('Edit User')}</div>
-			<button
-				class="self-center"
-				on:click={() => {
-					show = false;
-				}}
-			>
+<Modal size="lg" bind:show>
+	<div class="max-h-[90dvh] overflow-y-auto">
+		<div class="flex justify-between px-5 py-4 dark:text-gray-300">
+			<div class="self-center text-lg font-medium">{$i18n.t('Edit User')}</div>
+			<button class="self-center" type="button" on:click={() => (show = false)}>
 				<svg
 					xmlns="http://www.w3.org/2000/svg"
 					viewBox="0 0 20 20"
 					fill="currentColor"
-					class="w-5 h-5"
+					class="size-5"
 				>
 					<path
 						d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
@@ -67,111 +73,76 @@
 		</div>
 		<hr class="border-gray-100 dark:border-gray-850" />
 
-		<div class="flex flex-col md:flex-row w-full p-5 md:space-x-4 dark:text-gray-200">
-			<div class=" flex flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
-				<form
-					class="flex flex-col w-full"
-					on:submit|preventDefault={() => {
-						submitHandler();
-					}}
-				>
-					<div class=" flex items-center rounded-md py-2 px-4 w-full">
-						<div class=" self-center mr-5">
-							<img
-								src={selectedUser.profile_image_url}
-								class=" max-w-[55px] object-cover rounded-full"
-								alt="User profile"
-							/>
-						</div>
-
-						<div>
-							<div class=" self-center capitalize font-semibold">{selectedUser.name}</div>
-
-							<div class="text-xs text-gray-500">
-								{$i18n.t('Created at')}
-								{dayjs(selectedUser.created_at * 1000).format('LL')}
-							</div>
-						</div>
+		<form
+			class="flex flex-col gap-4 p-5 dark:text-gray-200"
+			on:submit|preventDefault={submitHandler}
+		>
+			<div class="flex items-center rounded-md px-2 py-1">
+				<img
+					src={selectedUser.profile_image_url}
+					class="mr-4 size-14 rounded-full object-cover"
+					alt="Profil utilisateur"
+				/>
+				<div>
+					<div class="font-semibold">{selectedUser.name}</div>
+					<div class="text-xs text-gray-500">
+						{$i18n.t('Created at')}
+						{dayjs(selectedUser.created_at * 1000).format('LL')}
 					</div>
-
-					<hr class="border-gray-100 dark:border-gray-850 my-3 w-full" />
-
-					<div class=" flex flex-col space-y-1.5">
-						<div class="flex flex-col w-full">
-							<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Email')}</div>
-
-							<div class="flex-1">
-								<input
-									class="w-full rounded-sm py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-800 disabled:text-gray-500 dark:disabled:text-gray-500 outline-hidden"
-									type="email"
-									bind:value={_user.email}
-									autocomplete="off"
-									required
-									disabled={_user.id == sessionUser.id}
-								/>
-							</div>
-						</div>
-
-						<div class="flex flex-col w-full">
-							<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Name')}</div>
-
-							<div class="flex-1">
-								<input
-									class="w-full rounded-sm py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-800 outline-hidden"
-									type="text"
-									bind:value={_user.name}
-									autocomplete="off"
-									required
-								/>
-							</div>
-						</div>
-
-						<div class="flex flex-col w-full">
-							<div class=" mb-1 text-xs text-gray-500">{$i18n.t('New Password')}</div>
-
-							<div class="flex-1">
-								<input
-									class="w-full rounded-sm py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-800 outline-hidden"
-									type="password"
-									bind:value={_user.password}
-									autocomplete="new-password"
-								/>
-							</div>
-						</div>
-					</div>
-
-					<div class="flex justify-end pt-3 text-sm font-medium">
-						<button
-							class=" px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-gray-100 transition rounded-lg"
-							type="submit"
-						>
-							{$i18n.t('Save')}
-						</button>
-					</div>
-				</form>
+				</div>
 			</div>
-		</div>
+
+			<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+				<label class="flex flex-col gap-1 text-xs text-gray-500">
+					{$i18n.t('Email')}
+					<input
+						class="rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden disabled:text-gray-500 dark:border-gray-800 dark:bg-gray-850"
+						type="email"
+						bind:value={_user.email}
+						autocomplete="off"
+						required
+						disabled={selectedUser.id === sessionUser.id}
+					/>
+				</label>
+
+				<label class="flex flex-col gap-1 text-xs text-gray-500">
+					Nom d’affichage
+					<input
+						class="rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-800 dark:bg-gray-850"
+						type="text"
+						bind:value={_user.name}
+						autocomplete="off"
+						required
+					/>
+				</label>
+
+				<label class="flex flex-col gap-1 text-xs text-gray-500 sm:col-span-2">
+					{$i18n.t('New Password')}
+					<input
+						class="rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-800 dark:bg-gray-850"
+						type="password"
+						bind:value={_user.password}
+						autocomplete="new-password"
+					/>
+				</label>
+			</div>
+
+			<UserProfileFields profile={_user} />
+
+			<p class="text-xs text-gray-500">
+				Les valeurs modifiées ici pourront être remplacées lors de la prochaine synchronisation
+				Airtable.
+			</p>
+
+			<div class="flex justify-end text-sm font-medium">
+				<button
+					class="rounded-full bg-black px-4 py-2 text-white transition hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-black"
+					type="submit"
+					disabled={loading}
+				>
+					{loading ? 'Enregistrement…' : $i18n.t('Save')}
+				</button>
+			</div>
+		</form>
 	</div>
 </Modal>
-
-<style>
-	input::-webkit-outer-spin-button,
-	input::-webkit-inner-spin-button {
-		/* display: none; <- Crashes Chrome on hover */
-		-webkit-appearance: none;
-		margin: 0; /* <-- Apparently some margin are still there even though it's hidden */
-	}
-
-	.tabs::-webkit-scrollbar {
-		display: none; /* for Chrome, Safari and Opera */
-	}
-
-	.tabs {
-		-ms-overflow-style: none; /* IE and Edge */
-		scrollbar-width: none; /* Firefox */
-	}
-
-	input[type='number'] {
-		-moz-appearance: textfield; /* Firefox */
-	}
-</style>

@@ -80,6 +80,7 @@ if "cuda_error" in locals():
 
 log_sources = [
     "AUDIO",
+    "AIRTABLE",
     "COMFYUI",
     "CONFIG",
     "DB",
@@ -351,6 +352,34 @@ WEBUI_AUTH_TRUSTED_NAME_HEADER = os.environ.get("WEBUI_AUTH_TRUSTED_NAME_HEADER"
 BYPASS_MODEL_ACCESS_CONTROL = (
     os.environ.get("BYPASS_MODEL_ACCESS_CONTROL", "False").lower() == "true"
 )
+
+####################################
+# AIRTABLE USER SYNC
+####################################
+
+AIRTABLE_SYNC_ENABLED = (
+    os.environ.get("AIRTABLE_SYNC_ENABLED", "False").lower() == "true"
+)
+AIRTABLE_API_TOKEN = os.environ.get(
+    "AIRTABLE_API_TOKEN", os.environ.get("AIRTABLE_API_KEY", "")
+)
+AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID", "")
+AIRTABLE_TABLE_ID = os.environ.get("AIRTABLE_TABLE_ID", "")
+AIRTABLE_VIEW = os.environ.get("AIRTABLE_VIEW", "")
+
+try:
+    AIRTABLE_SYNC_INTERVAL_SECONDS = max(
+        60, int(os.environ.get("AIRTABLE_SYNC_INTERVAL_SECONDS", "3600"))
+    )
+except ValueError:
+    AIRTABLE_SYNC_INTERVAL_SECONDS = 3600
+
+try:
+    AIRTABLE_REQUEST_TIMEOUT_SECONDS = max(
+        1, int(os.environ.get("AIRTABLE_REQUEST_TIMEOUT_SECONDS", "30"))
+    )
+except ValueError:
+    AIRTABLE_REQUEST_TIMEOUT_SECONDS = 30
 
 ####################################
 # WEBUI_SECRET_KEY

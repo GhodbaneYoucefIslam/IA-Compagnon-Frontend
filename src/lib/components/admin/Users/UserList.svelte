@@ -39,6 +39,12 @@
 	let selectedUser = null;
 
 	let page = 1;
+	let previousSearch = '';
+
+	$: if (search !== previousSearch) {
+		page = 1;
+		previousSearch = search;
+	}
 
 	let showDeleteConfirmDialog = false;
 	let showAddUserModal = false;
@@ -79,25 +85,42 @@
 		}
 	}
 
-	let filteredUsers;
+	let matchingUsers = [];
+	let filteredUsers = [];
 
-	$: filteredUsers = users
+	$: matchingUsers = users
 		.filter((user) => {
 			if (search === '') {
 				return true;
-			} else {
-				let name = user.name.toLowerCase();
-				let email = user.email.toLowerCase();
-				const query = search.toLowerCase();
-				return name.includes(query) || email.includes(query);
 			}
+
+			const query = search.toLocaleLowerCase();
+			return [
+				user.name,
+				user.email,
+				user.last_name,
+				user.first_name,
+				user.gender,
+				user.oreegami_edu_email,
+				user.campus_region,
+				user.session,
+				user.rncp_title,
+				user.apprenticeship_company,
+				user.apprenticeship_start_date,
+				user.apprenticeship_end_date
+			].some((value) => `${value ?? ''}`.toLocaleLowerCase().includes(query));
 		})
 		.sort((a, b) => {
-			if (a[sortKey] < b[sortKey]) return sortOrder === 'asc' ? -1 : 1;
-			if (a[sortKey] > b[sortKey]) return sortOrder === 'asc' ? 1 : -1;
-			return 0;
-		})
-		.slice((page - 1) * 20, page * 20);
+			const left = a[sortKey] ?? '';
+			const right = b[sortKey] ?? '';
+			const comparison =
+				typeof left === 'number' && typeof right === 'number'
+					? left - right
+					: `${left}`.localeCompare(`${right}`, 'fr', { sensitivity: 'base' });
+			return sortOrder === 'asc' ? comparison : -comparison;
+		});
+
+	$: filteredUsers = matchingUsers.slice((page - 1) * 20, page * 20);
 </script>
 
 <ConfirmDialog
@@ -288,6 +311,57 @@
 				<th
 					scope="col"
 					class="px-3 py-1.5 cursor-pointer select-none"
+					on:click={() => setSortKey('campus_region')}
+				>
+					<div class="flex gap-1.5 items-center">
+						Campus / session
+						{#if sortKey === 'campus_region'}
+							{#if sortOrder === 'asc'}
+								<ChevronUp className="size-2" />
+							{:else}
+								<ChevronDown className="size-2" />
+							{/if}
+						{/if}
+					</div>
+				</th>
+
+				<th
+					scope="col"
+					class="px-3 py-1.5 cursor-pointer select-none"
+					on:click={() => setSortKey('rncp_title')}
+				>
+					<div class="flex gap-1.5 items-center">
+						Titre RNCP
+						{#if sortKey === 'rncp_title'}
+							{#if sortOrder === 'asc'}
+								<ChevronUp className="size-2" />
+							{:else}
+								<ChevronDown className="size-2" />
+							{/if}
+						{/if}
+					</div>
+				</th>
+
+				<th
+					scope="col"
+					class="px-3 py-1.5 cursor-pointer select-none"
+					on:click={() => setSortKey('apprenticeship_company')}
+				>
+					<div class="flex gap-1.5 items-center">
+						Alternance
+						{#if sortKey === 'apprenticeship_company'}
+							{#if sortOrder === 'asc'}
+								<ChevronUp className="size-2" />
+							{:else}
+								<ChevronDown className="size-2" />
+							{/if}
+						{/if}
+					</div>
+				</th>
+
+				<th
+					scope="col"
+					class="px-3 py-1.5 cursor-pointer select-none"
 					on:click={() => setSortKey('last_active_at')}
 				>
 					<div class="flex gap-1.5 items-center">
@@ -392,10 +466,49 @@
 								alt="user"
 							/>
 
-							<div class=" font-medium self-center">{user.name}</div>
+							<div class="self-center">
+								<div class="font-medium">{user.name}</div>
+								{#if user.first_name || user.last_name || user.gender}
+									<div class="text-[11px] font-normal text-gray-500">
+										{[user.first_name, user.last_name].filter(Boolean).join(' ')}
+										{user.gender ? `· ${user.gender}` : ''}
+									</div>
+								{/if}
+							</div>
 						</div>
 					</td>
-					<td class=" px-3 py-1"> {user.email} </td>
+					<td class="px-3 py-1">
+						<div>{user.email}</div>
+						{#if user.oreegami_edu_email}
+							<div class="text-[11px] text-gray-500">{user.oreegami_edu_email}</div>
+						{/if}
+					</td>
+
+					<td class="px-3 py-1">
+						<div>{user.campus_region ?? '—'}</div>
+						{#if user.session}
+							<div class="text-[11px] text-gray-500">Session {user.session}</div>
+						{/if}
+					</td>
+
+					<td class="max-w-52 whitespace-normal px-3 py-1">
+						{user.rncp_title ?? '—'}
+					</td>
+
+					<td class="max-w-56 whitespace-normal px-3 py-1">
+						<div>{user.apprenticeship_company ?? '—'}</div>
+						{#if user.apprenticeship_start_date || user.apprenticeship_end_date}
+							<div class="text-[11px] text-gray-500">
+								{user.apprenticeship_start_date
+									? dayjs(user.apprenticeship_start_date).format('L')
+									: '…'}
+								→
+								{user.apprenticeship_end_date
+									? dayjs(user.apprenticeship_end_date).format('L')
+									: '…'}
+							</div>
+						{/if}
+					</td>
 
 					<td class=" px-3 py-1">
 						{dayjs(user.last_active_at * 1000).fromNow()}
@@ -486,7 +599,7 @@
 	ⓘ {$i18n.t("Click on the user role button to change a user's role.")}
 </div>
 
-<Pagination bind:page count={users.length} />
+<Pagination bind:page count={matchingUsers.length} />
 
 {#if !$config?.license_metadata}
 	{#if users.length > 50}

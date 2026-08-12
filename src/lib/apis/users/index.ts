@@ -1,5 +1,10 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { getUserPosition } from '$lib/utils';
+import {
+	USER_PROFILE_KEYS,
+	createUserProfilePayload,
+	type UserProfileFields
+} from '$lib/types/user';
 
 export const getUserGroups = async (token: string) => {
 	let error = null;
@@ -324,15 +329,16 @@ export const deleteUserById = async (token: string, userId: string) => {
 	return res;
 };
 
-type UserUpdateForm = {
+export type UserUpdateForm = UserProfileFields & {
 	profile_image_url: string;
 	email: string;
 	name: string;
-	password: string;
+	password?: string;
 };
 
 export const updateUserById = async (token: string, userId: string, user: UserUpdateForm) => {
 	let error = null;
+	const includesProfile = USER_PROFILE_KEYS.some((key) => key in user);
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/users/${userId}/update`, {
 		method: 'POST',
@@ -344,7 +350,8 @@ export const updateUserById = async (token: string, userId: string, user: UserUp
 			profile_image_url: user.profile_image_url,
 			email: user.email,
 			name: user.name,
-			password: user.password !== '' ? user.password : undefined
+			password: user.password ? user.password : undefined,
+			...(includesProfile ? createUserProfilePayload(user) : {})
 		})
 	})
 		.then(async (res) => {

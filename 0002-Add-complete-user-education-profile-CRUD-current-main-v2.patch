@@ -1,0 +1,2369 @@
+From 1f3703e149494ccfa2c89783911d657d112af94c Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Fri, 7 Aug 2026 12:38:35 +0300
+Subject: [PATCH] Add complete user education profile CRUD
+
+---
+ backend/open_webui/integrations/airtable.py   |   8 +
+ backend/open_webui/models/auths.py            |  19 +-
+ backend/open_webui/models/users.py            | 121 ++++-
+ backend/open_webui/routers/auths.py           |  62 ++-
+ backend/open_webui/routers/users.py           |  27 +-
+ .../test/apps/webui/routers/test_auths.py     |  72 ++-
+ .../test/apps/webui/routers/test_users.py     |  33 ++
+ .../test/integrations/test_airtable.py        |  13 +
+ docs/airtable-user-sync.md                    |  46 +-
+ src/lib/apis/auths/index.ts                   |  39 +-
+ src/lib/apis/users/index.ts                   |  13 +-
+ .../components/admin/Users/UserList.svelte    | 143 ++++-
+ .../admin/Users/UserList/AddUserModal.svelte  | 513 ++++++++----------
+ .../admin/Users/UserList/EditUserModal.svelte | 217 ++++----
+ .../components/chat/Settings/Account.svelte   |  37 +-
+ .../common/UserProfileFields.svelte           |  91 ++++
+ src/lib/stores/index.ts                       |   3 +-
+ src/lib/types/user.test.ts                    |  42 ++
+ src/lib/types/user.ts                         |  62 +++
+ src/routes/auth/+page.svelte                  |  38 +-
+ static/static/user-import.csv                 |   2 +
+ 21 files changed, 1060 insertions(+), 541 deletions(-)
+ create mode 100644 src/lib/components/common/UserProfileFields.svelte
+ create mode 100644 src/lib/types/user.test.ts
+ create mode 100644 src/lib/types/user.ts
+ create mode 100644 static/static/user-import.csv
+
+diff --git a/backend/open_webui/integrations/airtable.py b/backend/open_webui/integrations/airtable.py
+index 06995ce..3472f48 100644
+--- a/backend/open_webui/integrations/airtable.py
++++ b/backend/open_webui/integrations/airtable.py
+@@ -106,6 +106,14 @@ def airtable_record_to_user_profile(record: dict[str, Any]) -> dict[str, Any]:
+     if profile["oreegami_edu_email"]:
+         profile["oreegami_edu_email"] = profile["oreegami_edu_email"].lower()
+ 
++    if (
++        profile["apprenticeship_start_date"]
++        and profile["apprenticeship_end_date"]
++        and profile["apprenticeship_end_date"]
++        < profile["apprenticeship_start_date"]
++    ):
++        raise ValueError("Airtable apprenticeship end date is before its start date")
++
+     return profile
+ 
+ 
+diff --git a/backend/open_webui/models/auths.py b/backend/open_webui/models/auths.py
+index f07c36c..d7c625d 100644
+--- a/backend/open_webui/models/auths.py
++++ b/backend/open_webui/models/auths.py
+@@ -3,7 +3,7 @@ import uuid
+ from typing import Optional
+ 
+ from open_webui.internal.db import Base, get_db
+-from open_webui.models.users import UserModel, Users
++from open_webui.models.users import UserModel, UserProfileFields, Users
+ from open_webui.env import SRC_LOG_LEVELS
+ from pydantic import BaseModel
+ from sqlalchemy import Boolean, Column, String, Text
+@@ -47,13 +47,15 @@ class ApiKey(BaseModel):
+     api_key: Optional[str] = None
+ 
+ 
+-class UserResponse(BaseModel):
++class UserResponse(UserProfileFields):
+     id: str
+     email: str
+     name: str
+     role: str
+     profile_image_url: str
+ 
++    model_config = {"from_attributes": True}
++
+ 
+ class SigninResponse(Token, UserResponse):
+     pass
+@@ -73,7 +75,7 @@ class ProfileImageUrlForm(BaseModel):
+     profile_image_url: str
+ 
+ 
+-class UpdateProfileForm(BaseModel):
++class UpdateProfileForm(UserProfileFields):
+     profile_image_url: str
+     name: str
+ 
+@@ -83,7 +85,7 @@ class UpdatePasswordForm(BaseModel):
+     new_password: str
+ 
+ 
+-class SignupForm(BaseModel):
++class SignupForm(UserProfileFields):
+     name: str
+     email: str
+     password: str
+@@ -103,6 +105,7 @@ class AuthsTable:
+         profile_image_url: str = "/user.png",
+         role: str = "pending",
+         oauth_sub: Optional[str] = None,
++        profile: Optional[dict] = None,
+     ) -> Optional[UserModel]:
+         with get_db() as db:
+             log.info("insert_new_auth")
+@@ -116,7 +119,13 @@ class AuthsTable:
+             db.add(result)
+ 
+             user = Users.insert_new_user(
+-                id, name, email, profile_image_url, role, oauth_sub
++                id,
++                name,
++                email,
++                profile_image_url,
++                role,
++                oauth_sub,
++                profile,
+             )
+ 
+             db.commit()
+diff --git a/backend/open_webui/models/users.py b/backend/open_webui/models/users.py
+index f3f71fe..01ae6ce 100644
+--- a/backend/open_webui/models/users.py
++++ b/backend/open_webui/models/users.py
+@@ -9,7 +9,7 @@ from open_webui.models.chats import Chats
+ from open_webui.models.groups import Groups
+ 
+ 
+-from pydantic import BaseModel, ConfigDict
++from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+ from sqlalchemy import BigInteger, Column, Date, String, Text, func, or_
+ 
+ ####################
+@@ -54,7 +54,71 @@ class UserSettings(BaseModel):
+     pass
+ 
+ 
+-class UserModel(BaseModel):
++USER_PROFILE_FIELDS = frozenset(
++    {
++        "last_name",
++        "first_name",
++        "gender",
++        "oreegami_edu_email",
++        "campus_region",
++        "session",
++        "rncp_title",
++        "apprenticeship_company",
++        "apprenticeship_start_date",
++        "apprenticeship_end_date",
++    }
++)
++
++USER_PROFILE_STRING_FIELDS = tuple(
++    USER_PROFILE_FIELDS
++    - {"apprenticeship_start_date", "apprenticeship_end_date"}
++)
++
++
++class UserProfileFields(BaseModel):
++    last_name: Optional[str] = None
++    first_name: Optional[str] = None
++    gender: Optional[str] = None
++    oreegami_edu_email: Optional[str] = None
++    campus_region: Optional[str] = None
++    session: Optional[str] = None
++    rncp_title: Optional[str] = None
++    apprenticeship_company: Optional[str] = None
++    apprenticeship_start_date: Optional[date] = None
++    apprenticeship_end_date: Optional[date] = None
++
++    @field_validator(*USER_PROFILE_STRING_FIELDS, mode="before")
++    @classmethod
++    def normalize_optional_strings(cls, value):
++        if isinstance(value, str):
++            value = value.strip()
++            return value or None
++        return value
++
++    @field_validator("oreegami_edu_email")
++    @classmethod
++    def normalize_oreegami_email(cls, value):
++        return value.lower() if value else None
++
++    @model_validator(mode="after")
++    def validate_apprenticeship_dates(self):
++        if (
++            self.apprenticeship_start_date
++            and self.apprenticeship_end_date
++            and self.apprenticeship_end_date < self.apprenticeship_start_date
++        ):
++            raise ValueError(
++                "apprenticeship_end_date must be on or after apprenticeship_start_date"
++            )
++        return self
++
++    def profile_dump(self, *, exclude_unset: bool = False) -> dict:
++        return self.model_dump(
++            include=USER_PROFILE_FIELDS, exclude_unset=exclude_unset
++        )
++
++
++class UserModel(UserProfileFields):
+     id: str
+     name: str
+     email: str
+@@ -71,17 +135,6 @@ class UserModel(BaseModel):
+ 
+     oauth_sub: Optional[str] = None
+ 
+-    last_name: Optional[str] = None
+-    first_name: Optional[str] = None
+-    gender: Optional[str] = None
+-    oreegami_edu_email: Optional[str] = None
+-    campus_region: Optional[str] = None
+-    session: Optional[str] = None
+-    rncp_title: Optional[str] = None
+-    apprenticeship_company: Optional[str] = None
+-    apprenticeship_start_date: Optional[date] = None
+-    apprenticeship_end_date: Optional[date] = None
+-
+     model_config = ConfigDict(from_attributes=True)
+ 
+ 
+@@ -110,7 +163,7 @@ class UserRoleUpdateForm(BaseModel):
+     role: str
+ 
+ 
+-class UserUpdateForm(BaseModel):
++class UserUpdateForm(UserProfileFields):
+     name: str
+     email: str
+     profile_image_url: str
+@@ -118,18 +171,8 @@ class UserUpdateForm(BaseModel):
+ 
+ 
+ class UsersTable:
+-    AIRTABLE_PROFILE_FIELDS = {
+-        "last_name",
+-        "first_name",
+-        "gender",
+-        "oreegami_edu_email",
+-        "campus_region",
+-        "session",
+-        "rncp_title",
+-        "apprenticeship_company",
+-        "apprenticeship_start_date",
+-        "apprenticeship_end_date",
+-    }
++    USER_PROFILE_FIELDS = USER_PROFILE_FIELDS
++    AIRTABLE_PROFILE_FIELDS = USER_PROFILE_FIELDS
+ 
+     def insert_new_user(
+         self,
+@@ -139,8 +182,10 @@ class UsersTable:
+         profile_image_url: str = "/user.png",
+         role: str = "pending",
+         oauth_sub: Optional[str] = None,
++        profile: Optional[dict] = None,
+     ) -> Optional[UserModel]:
+         with get_db() as db:
++            profile = UserProfileFields(**(profile or {})).profile_dump()
+             user = UserModel(
+                 **{
+                     "id": id,
+@@ -152,6 +197,7 @@ class UsersTable:
+                     "created_at": int(time.time()),
+                     "updated_at": int(time.time()),
+                     "oauth_sub": oauth_sub,
++                    **profile,
+                 }
+             )
+             result = User(**user.model_dump())
+@@ -187,6 +233,24 @@ class UsersTable:
+         except Exception:
+             return None
+ 
++    def is_email_used_by_another_user(
++        self, email: str, user_id: Optional[str] = None
++    ) -> bool:
++        normalized_email = email.strip().lower()
++        if not normalized_email:
++            return False
++
++        with get_db() as db:
++            query = db.query(User.id).filter(
++                or_(
++                    func.lower(User.email) == normalized_email,
++                    func.lower(User.oreegami_edu_email) == normalized_email,
++                )
++            )
++            if user_id:
++                query = query.filter(User.id != user_id)
++            return query.first() is not None
++
+     def get_user_by_oauth_sub(self, sub: str) -> Optional[UserModel]:
+         try:
+             with get_db() as db:
+@@ -314,9 +378,10 @@ class UsersTable:
+         if not normalized_email:
+             return None, False
+ 
++        validated_profile = UserProfileFields(**profile).profile_dump()
+         updated = {
+-            key: value
+-            for key, value in profile.items()
++            key: validated_profile[key]
++            for key in profile
+             if key in self.AIRTABLE_PROFILE_FIELDS
+         }
+ 
+diff --git a/backend/open_webui/routers/auths.py b/backend/open_webui/routers/auths.py
+index 546d667..ea41b14 100644
+--- a/backend/open_webui/routers/auths.py
++++ b/backend/open_webui/routers/auths.py
+@@ -58,6 +58,21 @@ router = APIRouter()
+ log = logging.getLogger(__name__)
+ log.setLevel(SRC_LOG_LEVELS["MAIN"])
+ 
++
++def validate_oreegami_edu_email(
++    email: Optional[str], user_id: Optional[str] = None
++) -> None:
++    if email and not validate_email_format(email):
++        raise HTTPException(
++            status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT
++        )
++    if email and Users.is_email_used_by_another_user(email, user_id):
++        raise HTTPException(400, detail=ERROR_MESSAGES.EMAIL_TAKEN)
++
++
++def user_response_payload(user) -> dict:
++    return UserResponse.model_validate(user).model_dump()
++
+ ############################
+ # GetSessionUser
+ ############################
+@@ -106,11 +121,7 @@ async def get_session_user(
+         "token": token,
+         "token_type": "Bearer",
+         "expires_at": expires_at,
+-        "id": user.id,
+-        "email": user.email,
+-        "name": user.name,
+-        "role": user.role,
+-        "profile_image_url": user.profile_image_url,
++        **user_response_payload(user),
+         "permissions": user_permissions,
+     }
+ 
+@@ -125,9 +136,16 @@ async def update_profile(
+     form_data: UpdateProfileForm, session_user=Depends(get_verified_user)
+ ):
+     if session_user:
++        validate_oreegami_edu_email(
++            form_data.oreegami_edu_email, session_user.id
++        )
+         user = Users.update_user_by_id(
+             session_user.id,
+-            {"profile_image_url": form_data.profile_image_url, "name": form_data.name},
++            {
++                "profile_image_url": form_data.profile_image_url,
++                "name": form_data.name,
++                **form_data.profile_dump(exclude_unset=True),
++            },
+         )
+         if user:
+             return user
+@@ -320,11 +338,7 @@ async def ldap_auth(request: Request, response: Response, form_data: LdapForm):
+                 return {
+                     "token": token,
+                     "token_type": "Bearer",
+-                    "id": user.id,
+-                    "email": user.email,
+-                    "name": user.name,
+-                    "role": user.role,
+-                    "profile_image_url": user.profile_image_url,
++                    **user_response_payload(user),
+                     "permissions": user_permissions,
+                 }
+             else:
+@@ -418,11 +432,7 @@ async def signin(request: Request, response: Response, form_data: SigninForm):
+             "token": token,
+             "token_type": "Bearer",
+             "expires_at": expires_at,
+-            "id": user.id,
+-            "email": user.email,
+-            "name": user.name,
+-            "role": user.role,
+-            "profile_image_url": user.profile_image_url,
++            **user_response_payload(user),
+             "permissions": user_permissions,
+         }
+     else:
+@@ -456,8 +466,9 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
+         raise HTTPException(
+             status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT
+         )
++    validate_oreegami_edu_email(form_data.oreegami_edu_email)
+ 
+-    if Users.get_user_by_email(form_data.email.lower()):
++    if Users.is_email_used_by_another_user(form_data.email):
+         raise HTTPException(400, detail=ERROR_MESSAGES.EMAIL_TAKEN)
+ 
+     try:
+@@ -483,6 +494,7 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
+             form_data.name,
+             form_data.profile_image_url,
+             role,
++            profile=form_data.profile_dump(),
+         )
+ 
+         # --- Default settings for users (activate memory in personalisation section) ---
+@@ -544,11 +556,7 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
+                 "token": token,
+                 "token_type": "Bearer",
+                 "expires_at": expires_at,
+-                "id": user.id,
+-                "email": user.email,
+-                "name": user.name,
+-                "role": user.role,
+-                "profile_image_url": user.profile_image_url,
++                **user_response_payload(user),
+                 "permissions": user_permissions,
+             }
+         else:
+@@ -603,8 +611,9 @@ async def add_user(form_data: AddUserForm, user=Depends(get_admin_user)):
+         raise HTTPException(
+             status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT
+         )
++    validate_oreegami_edu_email(form_data.oreegami_edu_email)
+ 
+-    if Users.get_user_by_email(form_data.email.lower()):
++    if Users.is_email_used_by_another_user(form_data.email):
+         raise HTTPException(400, detail=ERROR_MESSAGES.EMAIL_TAKEN)
+ 
+     try:
+@@ -615,6 +624,7 @@ async def add_user(form_data: AddUserForm, user=Depends(get_admin_user)):
+             form_data.name,
+             form_data.profile_image_url,
+             form_data.role,
++            profile=form_data.profile_dump(),
+         )
+ 
+         # --- Default settings for users (activate memory in personalisation section) ---
+@@ -634,11 +644,7 @@ async def add_user(form_data: AddUserForm, user=Depends(get_admin_user)):
+             return {
+                 "token": token,
+                 "token_type": "Bearer",
+-                "id": user.id,
+-                "email": user.email,
+-                "name": user.name,
+-                "role": user.role,
+-                "profile_image_url": user.profile_image_url,
++                **user_response_payload(user),
+             }
+         else:
+             raise HTTPException(500, detail=ERROR_MESSAGES.CREATE_USER_ERROR)
+diff --git a/backend/open_webui/routers/users.py b/backend/open_webui/routers/users.py
+index a9ac34e..a4e473a 100644
+--- a/backend/open_webui/routers/users.py
++++ b/backend/open_webui/routers/users.py
+@@ -21,6 +21,7 @@ from pydantic import BaseModel
+ 
+ from open_webui.utils.auth import get_admin_user, get_password_hash, get_verified_user
+ from open_webui.utils.access_control import get_permissions
++from open_webui.utils.misc import validate_email_format
+ 
+ 
+ log = logging.getLogger(__name__)
+@@ -291,9 +292,30 @@ async def update_user_by_id(
+     user = Users.get_user_by_id(user_id)
+ 
+     if user:
++        if not validate_email_format(form_data.email.lower()):
++            raise HTTPException(
++                status_code=status.HTTP_400_BAD_REQUEST,
++                detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT,
++            )
++
++        if form_data.oreegami_edu_email and not validate_email_format(
++            form_data.oreegami_edu_email
++        ):
++            raise HTTPException(
++                status_code=status.HTTP_400_BAD_REQUEST,
++                detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT,
++            )
++
++        if Users.is_email_used_by_another_user(
++            form_data.oreegami_edu_email or "", user_id
++        ):
++            raise HTTPException(
++                status_code=status.HTTP_400_BAD_REQUEST,
++                detail=ERROR_MESSAGES.EMAIL_TAKEN,
++            )
++
+         if form_data.email.lower() != user.email:
+-            email_user = Users.get_user_by_email(form_data.email.lower())
+-            if email_user:
++            if Users.is_email_used_by_another_user(form_data.email, user_id):
+                 raise HTTPException(
+                     status_code=status.HTTP_400_BAD_REQUEST,
+                     detail=ERROR_MESSAGES.EMAIL_TAKEN,
+@@ -311,6 +333,7 @@ async def update_user_by_id(
+                 "name": form_data.name,
+                 "email": form_data.email.lower(),
+                 "profile_image_url": form_data.profile_image_url,
++                **form_data.profile_dump(exclude_unset=True),
+             },
+         )
+ 
+diff --git a/backend/open_webui/test/apps/webui/routers/test_auths.py b/backend/open_webui/test/apps/webui/routers/test_auths.py
+index f0f69e2..92ecc74 100644
+--- a/backend/open_webui/test/apps/webui/routers/test_auths.py
++++ b/backend/open_webui/test/apps/webui/routers/test_auths.py
+@@ -1,3 +1,5 @@
++from datetime import date
++
+ from test.util.abstract_integration_test import AbstractPostgresTest
+ from test.util.mock_user import mock_webui_user
+ 
+@@ -23,6 +25,16 @@ class TestAuths(AbstractPostgresTest):
+             "email": "john.doe@openwebui.com",
+             "role": "user",
+             "profile_image_url": "/user.png",
++            "last_name": None,
++            "first_name": None,
++            "gender": None,
++            "oreegami_edu_email": None,
++            "campus_region": None,
++            "session": None,
++            "rncp_title": None,
++            "apprenticeship_company": None,
++            "apprenticeship_start_date": None,
++            "apprenticeship_end_date": None,
+         }
+ 
+     def test_update_profile(self):
+@@ -39,12 +51,42 @@ class TestAuths(AbstractPostgresTest):
+         with mock_webui_user(id=user.id):
+             response = self.fast_api_client.post(
+                 self.create_url("/update/profile"),
+-                json={"name": "John Doe 2", "profile_image_url": "/user2.png"},
++                json={
++                    "name": "John Doe 2",
++                    "profile_image_url": "/user2.png",
++                    "last_name": "Doe",
++                    "first_name": "John",
++                    "gender": "Homme",
++                    "oreegami_edu_email": "JOHN.DOE@OREEGAMI-EDU.COM",
++                    "campus_region": "Occitanie",
++                    "session": "2026",
++                    "rncp_title": "Expert en IA",
++                    "apprenticeship_company": "Example Corp",
++                    "apprenticeship_start_date": "2026-09-01",
++                    "apprenticeship_end_date": "2027-08-31",
++                },
+             )
+         assert response.status_code == 200
+         db_user = self.users.get_user_by_id(user.id)
+         assert db_user.name == "John Doe 2"
+         assert db_user.profile_image_url == "/user2.png"
++        assert db_user.last_name == "Doe"
++        assert db_user.first_name == "John"
++        assert db_user.oreegami_edu_email == "john.doe@oreegami-edu.com"
++        assert db_user.apprenticeship_start_date == date(2026, 9, 1)
++        assert db_user.apprenticeship_end_date == date(2027, 8, 31)
++
++        # Older clients that only update the display profile must not clear
++        # education fields they do not send.
++        with mock_webui_user(id=user.id):
++            response = self.fast_api_client.post(
++                self.create_url("/update/profile"),
++                json={"name": "John Doe 3", "profile_image_url": "/user3.png"},
++            )
++        assert response.status_code == 200
++        db_user = self.users.get_user_by_id(user.id)
++        assert db_user.last_name == "Doe"
++        assert db_user.oreegami_edu_email == "john.doe@oreegami-edu.com"
+ 
+     def test_update_password(self):
+         from open_webui.utils.auth import get_password_hash
+@@ -104,6 +146,15 @@ class TestAuths(AbstractPostgresTest):
+                 "name": "John Doe",
+                 "email": "john.doe@openwebui.com",
+                 "password": "password",
++                "last_name": "Doe",
++                "first_name": "John",
++                "oreegami_edu_email": "john.doe@oreegami-edu.com",
++                "campus_region": "Occitanie",
++                "session": "2026",
++                "rncp_title": "Expert en IA",
++                "apprenticeship_company": "Example Corp",
++                "apprenticeship_start_date": "2026-09-01",
++                "apprenticeship_end_date": "2027-08-31",
+             },
+         )
+         assert response.status_code == 200
+@@ -113,6 +164,11 @@ class TestAuths(AbstractPostgresTest):
+         assert data["email"] == "john.doe@openwebui.com"
+         assert data["role"] in ["admin", "user", "pending"]
+         assert data["profile_image_url"] == "/user.png"
++        assert data["last_name"] == "Doe"
++        assert data["first_name"] == "John"
++        assert data["oreegami_edu_email"] == "john.doe@oreegami-edu.com"
++        assert data["apprenticeship_start_date"] == "2026-09-01"
++        assert data["apprenticeship_end_date"] == "2027-08-31"
+         assert data["token"] is not None and len(data["token"]) > 0
+         assert data["token_type"] == "Bearer"
+ 
+@@ -125,6 +181,16 @@ class TestAuths(AbstractPostgresTest):
+                     "email": "john.doe2@openwebui.com",
+                     "password": "password2",
+                     "role": "admin",
++                    "last_name": "Doe",
++                    "first_name": "Jane",
++                    "gender": "Femme",
++                    "oreegami_edu_email": "jane.doe@oreegami-edu.com",
++                    "campus_region": "Île-de-France",
++                    "session": "2027",
++                    "rncp_title": "Data Engineer",
++                    "apprenticeship_company": "Example Corp",
++                    "apprenticeship_start_date": "2027-09-01",
++                    "apprenticeship_end_date": "2028-08-31",
+                 },
+             )
+         assert response.status_code == 200
+@@ -134,6 +200,10 @@ class TestAuths(AbstractPostgresTest):
+         assert data["email"] == "john.doe2@openwebui.com"
+         assert data["role"] == "admin"
+         assert data["profile_image_url"] == "/user.png"
++        assert data["last_name"] == "Doe"
++        assert data["first_name"] == "Jane"
++        assert data["oreegami_edu_email"] == "jane.doe@oreegami-edu.com"
++        assert data["campus_region"] == "Île-de-France"
+         assert data["token"] is not None and len(data["token"]) > 0
+         assert data["token_type"] == "Bearer"
+ 
+diff --git a/backend/open_webui/test/apps/webui/routers/test_users.py b/backend/open_webui/test/apps/webui/routers/test_users.py
+index c829587..ac78f01 100644
+--- a/backend/open_webui/test/apps/webui/routers/test_users.py
++++ b/backend/open_webui/test/apps/webui/routers/test_users.py
+@@ -127,6 +127,19 @@ class TestUsers(AbstractPostgresTest):
+         assert response.status_code == 200
+         assert response.json() == {"name": "user 2", "profile_image_url": "/user2.png"}
+ 
++        # The Oreegami email cannot collide with another user's primary email.
++        with mock_webui_user(id="1"):
++            response = self.fast_api_client.post(
++                self.create_url("/2/update"),
++                json={
++                    "name": "user 2",
++                    "email": "user2@openwebui.com",
++                    "profile_image_url": "/user2.png",
++                    "oreegami_edu_email": "USER1@OPENWEBUI.COM",
++                },
++            )
++        assert response.status_code == 400
++
+         # Update user by id
+         with mock_webui_user(id="1"):
+             response = self.fast_api_client.post(
+@@ -135,6 +148,16 @@ class TestUsers(AbstractPostgresTest):
+                     "name": "user 2 updated",
+                     "email": "user2-updated@openwebui.com",
+                     "profile_image_url": "/user2-updated.png",
++                    "last_name": "Dupont",
++                    "first_name": "Élodie",
++                    "gender": "Femme",
++                    "oreegami_edu_email": "ELODIE.DUPONT@OREEGAMI-EDU.COM",
++                    "campus_region": "Occitanie",
++                    "session": "2026",
++                    "rncp_title": "Expert en IA",
++                    "apprenticeship_company": "ODYSS'IA",
++                    "apprenticeship_start_date": "2026-09-01",
++                    "apprenticeship_end_date": "2027-08-31",
+                 },
+             )
+         assert response.status_code == 200
+@@ -153,6 +176,16 @@ class TestUsers(AbstractPostgresTest):
+             name="user 2 updated",
+             email="user2-updated@openwebui.com",
+             profile_image_url="/user2-updated.png",
++            last_name="Dupont",
++            first_name="Élodie",
++            gender="Femme",
++            oreegami_edu_email="elodie.dupont@oreegami-edu.com",
++            campus_region="Occitanie",
++            session="2026",
++            rncp_title="Expert en IA",
++            apprenticeship_company="ODYSS'IA",
++            apprenticeship_start_date="2026-09-01",
++            apprenticeship_end_date="2027-08-31",
+         )
+ 
+         # Delete user by id
+diff --git a/backend/open_webui/test/integrations/test_airtable.py b/backend/open_webui/test/integrations/test_airtable.py
+index 4bffd71..43e34ec 100644
+--- a/backend/open_webui/test/integrations/test_airtable.py
++++ b/backend/open_webui/test/integrations/test_airtable.py
+@@ -54,6 +54,19 @@ def test_airtable_record_to_user_profile_rejects_invalid_date():
+         )
+ 
+ 
++def test_airtable_record_to_user_profile_rejects_inverted_date_range():
++    with pytest.raises(ValueError, match="end date is before its start date"):
++        airtable.airtable_record_to_user_profile(
++            _record(
++                **{
++                    "mail oreegami edu": "student@oreegami.com",
++                    "Début Alternance": "2027-09-01",
++                    "Fin Alternance": "2027-08-31",
++                }
++            )
++        )
++
++
+ def test_sync_airtable_users_counts_results(monkeypatch):
+     records = [
+         _record(**{"mail oreegami edu": "updated@oreegami.com"}),
+diff --git a/docs/airtable-user-sync.md b/docs/airtable-user-sync.md
+index 53c80f8..4b5525d 100644
+--- a/docs/airtable-user-sync.md
++++ b/docs/airtable-user-sync.md
+@@ -8,18 +8,18 @@ delete accounts.
+ 
+ ## Field mapping
+ 
+-| Airtable column | Open WebUI `user` column | Type |
+-| --- | --- | --- |
+-| `Nom` | `last_name` | text |
+-| `Prénom` | `first_name` | text |
+-| `Genre` | `gender` | text |
+-| `mail oreegami edu` | `oreegami_edu_email` | text |
+-| `Région du campus` | `campus_region` | text |
+-| `Session` | `session` | text |
+-| `Titre RNCP` | `rncp_title` | text |
+-| `Nom Entreprise d'alternance` | `apprenticeship_company` | text |
+-| `Début Alternance` | `apprenticeship_start_date` | date |
+-| `Fin Alternance` | `apprenticeship_end_date` | date |
++| Airtable column               | Open WebUI `user` column    | Type |
++| ----------------------------- | --------------------------- | ---- |
++| `Nom`                         | `last_name`                 | text |
++| `Prénom`                      | `first_name`                | text |
++| `Genre`                       | `gender`                    | text |
++| `mail oreegami edu`           | `oreegami_edu_email`        | text |
++| `Région du campus`            | `campus_region`             | text |
++| `Session`                     | `session`                   | text |
++| `Titre RNCP`                  | `rncp_title`                | text |
++| `Nom Entreprise d'alternance` | `apprenticeship_company`    | text |
++| `Début Alternance`            | `apprenticeship_start_date` | date |
++| `Fin Alternance`              | `apprenticeship_end_date`   | date |
+ 
+ Empty Airtable cells clear the corresponding Open WebUI value. Records without
+ an Oreegami Edu email, records with invalid dates, and duplicate records sharing
+@@ -27,6 +27,28 @@ the same Oreegami Edu email are skipped. Unmatched records are left untouched so
+ that authentication data is never created without the normal Open WebUI signup
+ or SSO flow.
+ 
++## CRUD interfaces
++
++The ten profile fields are available in every user write path:
++
++- self-service signup and account settings;
++- administrator user creation and editing;
++- administrator CSV import;
++- `POST /api/v1/auths/signup`, `POST /api/v1/auths/add`,
++  `POST /api/v1/auths/update/profile`, and
++  `POST /api/v1/users/{user_id}/update`.
++
++The administrator user list groups the fields by identity, campus/session,
++RNCP title, and apprenticeship, and its search covers all ten values. The CSV
++template is served at `/static/user-import.csv`; it keeps the four legacy
++columns first, followed by the ten fields in the mapping order above. Dates use
++ISO `YYYY-MM-DD` values. Empty strings are stored as `NULL`, email matching is
++case-insensitive, and an apprenticeship end date before its start date is
++rejected.
++
++When periodic synchronization is enabled, Airtable remains the source of truth:
++a later sync can overwrite values changed manually in an interface.
++
+ ## Configuration
+ 
+ Create an Airtable personal access token with read access to the selected base,
+diff --git a/src/lib/apis/auths/index.ts b/src/lib/apis/auths/index.ts
+index 40caebf..ac8f822 100644
+--- a/src/lib/apis/auths/index.ts
++++ b/src/lib/apis/auths/index.ts
+@@ -1,4 +1,13 @@
+ import { WEBUI_API_BASE_URL } from '$lib/constants';
++import { createUserProfilePayload, type UserProfileFields } from '$lib/types/user';
++
++export type AddUserForm = UserProfileFields & {
++	name: string;
++	email: string;
++	password: string;
++	role: string;
++	profile_image_url?: string;
++};
+ 
+ export const getAdminDetails = async (token: string) => {
+ 	let error = null;
+@@ -290,7 +299,8 @@ export const userSignUp = async (
+ 	name: string,
+ 	email: string,
+ 	password: string,
+-	profile_image_url: string
++	profile_image_url: string,
++	profile?: UserProfileFields
+ ) => {
+ 	let error = null;
+ 
+@@ -304,7 +314,8 @@ export const userSignUp = async (
+ 			name: name,
+ 			email: email,
+ 			password: password,
+-			profile_image_url: profile_image_url
++			profile_image_url: profile_image_url,
++			...(profile ? createUserProfilePayload(profile) : {})
+ 		})
+ 	})
+ 		.then(async (res) => {
+@@ -349,13 +360,7 @@ export const userSignOut = async () => {
+ 	}
+ };
+ 
+-export const addUser = async (
+-	token: string,
+-	name: string,
+-	email: string,
+-	password: string,
+-	role: string = 'pending'
+-) => {
++export const addUser = async (token: string, user: AddUserForm) => {
+ 	let error = null;
+ 
+ 	const res = await fetch(`${WEBUI_API_BASE_URL}/auths/add`, {
+@@ -365,10 +370,8 @@ export const addUser = async (
+ 			...(token && { authorization: `Bearer ${token}` })
+ 		},
+ 		body: JSON.stringify({
+-			name: name,
+-			email: email,
+-			password: password,
+-			role: role
++			...user,
++			...createUserProfilePayload(user)
+ 		})
+ 	})
+ 		.then(async (res) => {
+@@ -388,7 +391,12 @@ export const addUser = async (
+ 	return res;
+ };
+ 
+-export const updateUserProfile = async (token: string, name: string, profileImageUrl: string) => {
++export const updateUserProfile = async (
++	token: string,
++	name: string,
++	profileImageUrl: string,
++	profile?: UserProfileFields
++) => {
+ 	let error = null;
+ 
+ 	const res = await fetch(`${WEBUI_API_BASE_URL}/auths/update/profile`, {
+@@ -399,7 +407,8 @@ export const updateUserProfile = async (token: string, name: string, profileImag
+ 		},
+ 		body: JSON.stringify({
+ 			name: name,
+-			profile_image_url: profileImageUrl
++			profile_image_url: profileImageUrl,
++			...(profile ? createUserProfilePayload(profile) : {})
+ 		})
+ 	})
+ 		.then(async (res) => {
+diff --git a/src/lib/apis/users/index.ts b/src/lib/apis/users/index.ts
+index f479b13..1aa5959 100644
+--- a/src/lib/apis/users/index.ts
++++ b/src/lib/apis/users/index.ts
+@@ -1,5 +1,10 @@
+ import { WEBUI_API_BASE_URL } from '$lib/constants';
+ import { getUserPosition } from '$lib/utils';
++import {
++	USER_PROFILE_KEYS,
++	createUserProfilePayload,
++	type UserProfileFields
++} from '$lib/types/user';
+ 
+ export const getUserGroups = async (token: string) => {
+ 	let error = null;
+@@ -324,15 +329,16 @@ export const deleteUserById = async (token: string, userId: string) => {
+ 	return res;
+ };
+ 
+-type UserUpdateForm = {
++export type UserUpdateForm = UserProfileFields & {
+ 	profile_image_url: string;
+ 	email: string;
+ 	name: string;
+-	password: string;
++	password?: string;
+ };
+ 
+ export const updateUserById = async (token: string, userId: string, user: UserUpdateForm) => {
+ 	let error = null;
++	const includesProfile = USER_PROFILE_KEYS.some((key) => key in user);
+ 
+ 	const res = await fetch(`${WEBUI_API_BASE_URL}/users/${userId}/update`, {
+ 		method: 'POST',
+@@ -344,7 +350,8 @@ export const updateUserById = async (token: string, userId: string, user: UserUp
+ 			profile_image_url: user.profile_image_url,
+ 			email: user.email,
+ 			name: user.name,
+-			password: user.password !== '' ? user.password : undefined
++			password: user.password ? user.password : undefined,
++			...(includesProfile ? createUserProfilePayload(user) : {})
+ 		})
+ 	})
+ 		.then(async (res) => {
+diff --git a/src/lib/components/admin/Users/UserList.svelte b/src/lib/components/admin/Users/UserList.svelte
+index 02fcdd7..c6f6367 100644
+--- a/src/lib/components/admin/Users/UserList.svelte
++++ b/src/lib/components/admin/Users/UserList.svelte
+@@ -39,6 +39,12 @@
+ 	let selectedUser = null;
+ 
+ 	let page = 1;
++	let previousSearch = '';
++
++	$: if (search !== previousSearch) {
++		page = 1;
++		previousSearch = search;
++	}
+ 
+ 	let showDeleteConfirmDialog = false;
+ 	let showAddUserModal = false;
+@@ -79,25 +85,42 @@
+ 		}
+ 	}
+ 
+-	let filteredUsers;
++	let matchingUsers = [];
++	let filteredUsers = [];
+ 
+-	$: filteredUsers = users
++	$: matchingUsers = users
+ 		.filter((user) => {
+ 			if (search === '') {
+ 				return true;
+-			} else {
+-				let name = user.name.toLowerCase();
+-				let email = user.email.toLowerCase();
+-				const query = search.toLowerCase();
+-				return name.includes(query) || email.includes(query);
+ 			}
++
++			const query = search.toLocaleLowerCase();
++			return [
++				user.name,
++				user.email,
++				user.last_name,
++				user.first_name,
++				user.gender,
++				user.oreegami_edu_email,
++				user.campus_region,
++				user.session,
++				user.rncp_title,
++				user.apprenticeship_company,
++				user.apprenticeship_start_date,
++				user.apprenticeship_end_date
++			].some((value) => `${value ?? ''}`.toLocaleLowerCase().includes(query));
+ 		})
+ 		.sort((a, b) => {
+-			if (a[sortKey] < b[sortKey]) return sortOrder === 'asc' ? -1 : 1;
+-			if (a[sortKey] > b[sortKey]) return sortOrder === 'asc' ? 1 : -1;
+-			return 0;
+-		})
+-		.slice((page - 1) * 20, page * 20);
++			const left = a[sortKey] ?? '';
++			const right = b[sortKey] ?? '';
++			const comparison =
++				typeof left === 'number' && typeof right === 'number'
++					? left - right
++					: `${left}`.localeCompare(`${right}`, 'fr', { sensitivity: 'base' });
++			return sortOrder === 'asc' ? comparison : -comparison;
++		});
++
++	$: filteredUsers = matchingUsers.slice((page - 1) * 20, page * 20);
+ </script>
+ 
+ <ConfirmDialog
+@@ -285,6 +308,57 @@
+ 					</div>
+ 				</th>
+ 
++				<th
++					scope="col"
++					class="px-3 py-1.5 cursor-pointer select-none"
++					on:click={() => setSortKey('campus_region')}
++				>
++					<div class="flex gap-1.5 items-center">
++						Campus / session
++						{#if sortKey === 'campus_region'}
++							{#if sortOrder === 'asc'}
++								<ChevronUp className="size-2" />
++							{:else}
++								<ChevronDown className="size-2" />
++							{/if}
++						{/if}
++					</div>
++				</th>
++
++				<th
++					scope="col"
++					class="px-3 py-1.5 cursor-pointer select-none"
++					on:click={() => setSortKey('rncp_title')}
++				>
++					<div class="flex gap-1.5 items-center">
++						Titre RNCP
++						{#if sortKey === 'rncp_title'}
++							{#if sortOrder === 'asc'}
++								<ChevronUp className="size-2" />
++							{:else}
++								<ChevronDown className="size-2" />
++							{/if}
++						{/if}
++					</div>
++				</th>
++
++				<th
++					scope="col"
++					class="px-3 py-1.5 cursor-pointer select-none"
++					on:click={() => setSortKey('apprenticeship_company')}
++				>
++					<div class="flex gap-1.5 items-center">
++						Alternance
++						{#if sortKey === 'apprenticeship_company'}
++							{#if sortOrder === 'asc'}
++								<ChevronUp className="size-2" />
++							{:else}
++								<ChevronDown className="size-2" />
++							{/if}
++						{/if}
++					</div>
++				</th>
++
+ 				<th
+ 					scope="col"
+ 					class="px-3 py-1.5 cursor-pointer select-none"
+@@ -392,10 +466,49 @@
+ 								alt="user"
+ 							/>
+ 
+-							<div class=" font-medium self-center">{user.name}</div>
++							<div class="self-center">
++								<div class="font-medium">{user.name}</div>
++								{#if user.first_name || user.last_name || user.gender}
++									<div class="text-[11px] font-normal text-gray-500">
++										{[user.first_name, user.last_name].filter(Boolean).join(' ')}
++										{user.gender ? `· ${user.gender}` : ''}
++									</div>
++								{/if}
++							</div>
+ 						</div>
+ 					</td>
+-					<td class=" px-3 py-1"> {user.email} </td>
++					<td class="px-3 py-1">
++						<div>{user.email}</div>
++						{#if user.oreegami_edu_email}
++							<div class="text-[11px] text-gray-500">{user.oreegami_edu_email}</div>
++						{/if}
++					</td>
++
++					<td class="px-3 py-1">
++						<div>{user.campus_region ?? '—'}</div>
++						{#if user.session}
++							<div class="text-[11px] text-gray-500">Session {user.session}</div>
++						{/if}
++					</td>
++
++					<td class="max-w-52 whitespace-normal px-3 py-1">
++						{user.rncp_title ?? '—'}
++					</td>
++
++					<td class="max-w-56 whitespace-normal px-3 py-1">
++						<div>{user.apprenticeship_company ?? '—'}</div>
++						{#if user.apprenticeship_start_date || user.apprenticeship_end_date}
++							<div class="text-[11px] text-gray-500">
++								{user.apprenticeship_start_date
++									? dayjs(user.apprenticeship_start_date).format('L')
++									: '…'}
++								→
++								{user.apprenticeship_end_date
++									? dayjs(user.apprenticeship_end_date).format('L')
++									: '…'}
++							</div>
++						{/if}
++					</td>
+ 
+ 					<td class=" px-3 py-1">
+ 						{dayjs(user.last_active_at * 1000).fromNow()}
+@@ -486,7 +599,7 @@
+ 	ⓘ {$i18n.t("Click on the user role button to change a user's role.")}
+ </div>
+ 
+-<Pagination bind:page count={users.length} />
++<Pagination bind:page count={matchingUsers.length} />
+ 
+ {#if !$config?.license_metadata}
+ 	{#if users.length > 50}
+diff --git a/src/lib/components/admin/Users/UserList/AddUserModal.svelte b/src/lib/components/admin/Users/UserList/AddUserModal.svelte
+index 86d6b38..58a97b4 100644
+--- a/src/lib/components/admin/Users/UserList/AddUserModal.svelte
++++ b/src/lib/components/admin/Users/UserList/AddUserModal.svelte
+@@ -1,139 +1,152 @@
+ <script lang="ts">
+ 	import { toast } from 'svelte-sonner';
+-	import { createEventDispatcher } from 'svelte';
+-	import { onMount, getContext } from 'svelte';
+-	import { addUser } from '$lib/apis/auths';
++	import { createEventDispatcher, getContext } from 'svelte';
++	import { addUser, type AddUserForm } from '$lib/apis/auths';
++	import { createUserProfileForm, type UserProfileForm } from '$lib/types/user';
+ 
+ 	import { WEBUI_BASE_URL } from '$lib/constants';
+-
+ 	import Modal from '$lib/components/common/Modal.svelte';
++	import UserProfileFields from '$lib/components/common/UserProfileFields.svelte';
+ 
+-	const i18n = getContext('i18n');
++	const i18n: any = getContext('i18n');
+ 	const dispatch = createEventDispatcher();
+ 
+ 	export let show = false;
+ 
+ 	let loading = false;
+ 	let tab = '';
+-	let inputFiles;
++	let inputFiles: FileList | undefined;
+ 
+-	let _user = {
++	const createEmptyUser = (): AddUserForm & UserProfileForm => ({
+ 		name: '',
+ 		email: '',
+ 		password: '',
+-		role: 'user'
+-	};
++		role: 'user',
++		...createUserProfileForm()
++	});
++
++	let _user = createEmptyUser();
+ 
+ 	$: if (show) {
+-		_user = {
+-			name: '',
+-			email: '',
+-			password: '',
+-			role: 'user'
+-		};
++		_user = createEmptyUser();
+ 	}
+ 
+-	const submitHandler = async () => {
+-		const stopLoading = () => {
+-			dispatch('save');
+-			loading = false;
+-		};
+-
+-		if (tab === '') {
+-			loading = true;
+-
+-			const res = await addUser(
+-				localStorage.token,
+-				_user.name,
+-				_user.email,
+-				_user.password,
+-				_user.role
+-			).catch((error) => {
+-				toast.error(`${error}`);
+-			});
+-
+-			if (res) {
+-				stopLoading();
+-				show = false;
++	const parseCsvRow = (row: string): string[] => {
++		const columns: string[] = [];
++		let current = '';
++		let quoted = false;
++
++		for (let index = 0; index < row.length; index += 1) {
++			const character = row[index];
++			if (character === '"') {
++				if (quoted && row[index + 1] === '"') {
++					current += '"';
++					index += 1;
++				} else {
++					quoted = !quoted;
++				}
++			} else if (character === ',' && !quoted) {
++				columns.push(current.trim());
++				current = '';
++			} else {
++				current += character;
+ 			}
+-		} else {
+-			if (inputFiles) {
+-				loading = true;
+-
+-				const file = inputFiles[0];
+-				const reader = new FileReader();
+-
+-				reader.onload = async (e) => {
+-					const csv = e.target.result;
+-					const rows = csv.split('\n');
+-
+-					let userCount = 0;
+-
+-					for (const [idx, row] of rows.entries()) {
+-						const columns = row.split(',').map((col) => col.trim());
+-						console.log(idx, columns);
++		}
+ 
+-						if (idx > 0) {
+-							if (
+-								columns.length === 4 &&
+-								['admin', 'user', 'pending'].includes(columns[3].toLowerCase())
+-							) {
+-								const res = await addUser(
+-									localStorage.token,
+-									columns[0],
+-									columns[1],
+-									columns[2],
+-									columns[3].toLowerCase()
+-								).catch((error) => {
+-									toast.error(`Row ${idx + 1}: ${error}`);
+-									return null;
+-								});
++		columns.push(current.trim());
++		return columns;
++	};
+ 
+-								if (res) {
+-									userCount = userCount + 1;
+-								}
+-							} else {
+-								toast.error(`Row ${idx + 1}: invalid format.`);
+-							}
+-						}
+-					}
++	const userFromCsvColumns = (columns: string[]): AddUserForm & UserProfileForm => ({
++		name: columns[0] ?? '',
++		email: columns[1] ?? '',
++		password: columns[2] ?? '',
++		role: (columns[3] ?? '').toLowerCase(),
++		last_name: columns[4] ?? '',
++		first_name: columns[5] ?? '',
++		gender: columns[6] ?? '',
++		oreegami_edu_email: columns[7] ?? '',
++		campus_region: columns[8] ?? '',
++		session: columns[9] ?? '',
++		rncp_title: columns[10] ?? '',
++		apprenticeship_company: columns[11] ?? '',
++		apprenticeship_start_date: columns[12] ?? '',
++		apprenticeship_end_date: columns[13] ?? ''
++	});
+ 
+-					toast.success(`Successfully imported ${userCount} users.`);
+-					inputFiles = null;
+-					const uploadInputElement = document.getElementById('upload-user-csv-input');
++	const submitHandler = async () => {
++		loading = true;
+ 
+-					if (uploadInputElement) {
+-						uploadInputElement.value = null;
+-					}
++		try {
++			if (tab === '') {
++				const res = await addUser(localStorage.token, _user).catch((error) => {
++					toast.error(`${error}`);
++					return null;
++				});
+ 
+-					stopLoading();
+-				};
++				if (res) {
++					dispatch('save');
++					show = false;
++				}
++				return;
++			}
+ 
+-				reader.readAsText(file);
+-			} else {
++			if (!inputFiles?.length) {
+ 				toast.error($i18n.t('File not found.'));
++				return;
++			}
++
++			const csv = await inputFiles[0].text();
++			const rows = csv
++				.replace(/^\uFEFF/, '')
++				.split(/\r?\n/)
++				.filter((row) => row.trim());
++			let userCount = 0;
++
++			for (const [index, row] of rows.slice(1).entries()) {
++				const columns = parseCsvRow(row);
++				const importedUser = userFromCsvColumns(columns);
++				const rowNumber = index + 2;
++
++				if (
++					columns.length < 4 ||
++					columns.length > 14 ||
++					!['admin', 'user', 'pending'].includes(importedUser.role)
++				) {
++					toast.error(`Ligne ${rowNumber} : format invalide.`);
++					continue;
++				}
++
++				const res = await addUser(localStorage.token, importedUser).catch((error) => {
++					toast.error(`Ligne ${rowNumber} : ${error}`);
++					return null;
++				});
++
++				if (res) {
++					userCount += 1;
++				}
+ 			}
+-		}
+ 
+-		loading = false;
++			toast.success(`${userCount} utilisateur(s) importé(s).`);
++			inputFiles = undefined;
++			dispatch('save');
++			show = false;
++		} finally {
++			loading = false;
++		}
+ 	};
+ </script>
+ 
+-<Modal size="sm" bind:show>
+-	<div>
+-		<div class=" flex justify-between dark:text-gray-300 px-5 pt-4 pb-2">
+-			<div class=" text-lg font-medium self-center">{$i18n.t('Add User')}</div>
+-			<button
+-				class="self-center"
+-				on:click={() => {
+-					show = false;
+-				}}
+-			>
++<Modal size="lg" bind:show>
++	<div class="max-h-[90dvh] overflow-y-auto">
++		<div class="flex justify-between px-5 pb-2 pt-4 dark:text-gray-300">
++			<div class="self-center text-lg font-medium">{$i18n.t('Add User')}</div>
++			<button class="self-center" type="button" on:click={() => (show = false)}>
+ 				<svg
+ 					xmlns="http://www.w3.org/2000/svg"
+ 					viewBox="0 0 20 20"
+ 					fill="currentColor"
+-					class="w-5 h-5"
++					class="size-5"
+ 				>
+ 					<path
+ 						d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
+@@ -142,205 +155,119 @@
+ 			</button>
+ 		</div>
+ 
+-		<div class="flex flex-col md:flex-row w-full px-4 pb-3 md:space-x-4 dark:text-gray-200">
+-			<div class=" flex flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
+-				<form
+-					class="flex flex-col w-full"
+-					on:submit|preventDefault={() => {
+-						submitHandler();
+-					}}
++		<form
++			class="flex flex-col px-5 pb-5 dark:text-gray-200"
++			on:submit|preventDefault={submitHandler}
++		>
++			<div
++				class="mb-3 flex w-fit gap-1 overflow-x-auto rounded-full text-center text-sm font-medium"
++			>
++				<button
++					class="min-w-fit rounded-full p-1.5 {tab === ''
++						? ''
++						: 'text-gray-400 hover:text-gray-700 dark:text-gray-600 dark:hover:text-white'}"
++					type="button"
++					on:click={() => (tab = '')}>{$i18n.t('Form')}</button
+ 				>
+-					<div
+-						class="flex -mt-2 mb-1.5 gap-1 scrollbar-none overflow-x-auto w-fit text-center text-sm font-medium rounded-full bg-transparent dark:text-gray-200"
+-					>
+-						<button
+-							class="min-w-fit rounded-full p-1.5 {tab === ''
+-								? ''
+-								: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition"
+-							type="button"
+-							on:click={() => {
+-								tab = '';
+-							}}>{$i18n.t('Form')}</button
+-						>
+ 
+-						<button
+-							class="min-w-fit rounded-full p-1.5 {tab === 'import'
+-								? ''
+-								: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition"
+-							type="button"
+-							on:click={() => {
+-								tab = 'import';
+-							}}>{$i18n.t('CSV Import')}</button
+-						>
+-					</div>
+-
+-					<div class="px-1">
+-						{#if tab === ''}
+-							<div class="flex flex-col w-full mb-3">
+-								<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Role')}</div>
+-
+-								<div class="flex-1">
+-									<select
+-										class="w-full capitalize rounded-lg text-sm bg-transparent dark:disabled:text-gray-500 outline-hidden"
+-										bind:value={_user.role}
+-										placeholder={$i18n.t('Enter Your Role')}
+-										required
+-									>
+-										<option value="pending"> {$i18n.t('pending')} </option>
+-										<option value="user"> {$i18n.t('user')} </option>
+-										<option value="admin"> {$i18n.t('admin')} </option>
+-									</select>
+-								</div>
+-							</div>
+-
+-							<div class="flex flex-col w-full mt-1">
+-								<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Name')}</div>
+-
+-								<div class="flex-1">
+-									<input
+-										class="w-full text-sm bg-transparent disabled:text-gray-500 dark:disabled:text-gray-500 outline-hidden"
+-										type="text"
+-										bind:value={_user.name}
+-										placeholder={$i18n.t('Enter Your Full Name')}
+-										autocomplete="off"
+-										required
+-									/>
+-								</div>
+-							</div>
+-
+-							<hr class=" border-gray-100 dark:border-gray-850 my-2.5 w-full" />
+-
+-							<div class="flex flex-col w-full">
+-								<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Email')}</div>
+-
+-								<div class="flex-1">
+-									<input
+-										class="w-full text-sm bg-transparent disabled:text-gray-500 dark:disabled:text-gray-500 outline-hidden"
+-										type="email"
+-										bind:value={_user.email}
+-										placeholder={$i18n.t('Enter Your Email')}
+-										required
+-									/>
+-								</div>
+-							</div>
+-
+-							<div class="flex flex-col w-full mt-1">
+-								<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Password')}</div>
+-
+-								<div class="flex-1">
+-									<input
+-										class="w-full text-sm bg-transparent disabled:text-gray-500 dark:disabled:text-gray-500 outline-hidden"
+-										type="password"
+-										bind:value={_user.password}
+-										placeholder={$i18n.t('Enter Your Password')}
+-										autocomplete="off"
+-									/>
+-								</div>
+-							</div>
+-						{:else if tab === 'import'}
+-							<div>
+-								<div class="mb-3 w-full">
+-									<input
+-										id="upload-user-csv-input"
+-										hidden
+-										bind:files={inputFiles}
+-										type="file"
+-										accept=".csv"
+-									/>
+-
+-									<button
+-										class="w-full text-sm font-medium py-3 bg-transparent hover:bg-gray-100 border border-dashed dark:border-gray-850 dark:hover:bg-gray-850 text-center rounded-xl"
+-										type="button"
+-										on:click={() => {
+-											document.getElementById('upload-user-csv-input')?.click();
+-										}}
+-									>
+-										{#if inputFiles}
+-											{inputFiles.length > 0 ? `${inputFiles.length}` : ''} document(s) selected.
+-										{:else}
+-											{$i18n.t('Click here to select a csv file.')}
+-										{/if}
+-									</button>
+-								</div>
+-
+-								<div class=" text-xs text-gray-500">
+-									ⓘ {$i18n.t(
+-										'Ensure your CSV file includes 4 columns in this order: Name, Email, Password, Role.'
+-									)}
+-									<a
+-										class="underline dark:text-gray-200"
+-										href="{WEBUI_BASE_URL}/static/user-import.csv"
+-									>
+-										{$i18n.t('Click here to download user import template file.')}
+-									</a>
+-								</div>
+-							</div>
+-						{/if}
+-					</div>
++				<button
++					class="min-w-fit rounded-full p-1.5 {tab === 'import'
++						? ''
++						: 'text-gray-400 hover:text-gray-700 dark:text-gray-600 dark:hover:text-white'}"
++					type="button"
++					on:click={() => (tab = 'import')}>{$i18n.t('CSV Import')}</button
++				>
++			</div>
+ 
+-					<div class="flex justify-end pt-3 text-sm font-medium">
+-						<button
+-							class="px-3.5 py-1.5 text-sm font-medium bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full flex flex-row space-x-1 items-center {loading
+-								? ' cursor-not-allowed'
+-								: ''}"
+-							type="submit"
+-							disabled={loading}
++			{#if tab === ''}
++				<div class="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
++					<label class="flex flex-col gap-1 text-xs text-gray-500">
++						{$i18n.t('Role')}
++						<select
++							class="rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-800 dark:bg-gray-850"
++							bind:value={_user.role}
++							required
++						>
++							<option value="pending">{$i18n.t('pending')}</option>
++							<option value="user">{$i18n.t('user')}</option>
++							<option value="admin">{$i18n.t('admin')}</option>
++						</select>
++					</label>
++
++					<label class="flex flex-col gap-1 text-xs text-gray-500">
++						Nom d’affichage
++						<input
++							class="rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-800 dark:bg-gray-850"
++							type="text"
++							bind:value={_user.name}
++							autocomplete="off"
++							required
++						/>
++					</label>
++
++					<label class="flex flex-col gap-1 text-xs text-gray-500">
++						{$i18n.t('Email')}
++						<input
++							class="rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-800 dark:bg-gray-850"
++							type="email"
++							bind:value={_user.email}
++							required
++						/>
++					</label>
++
++					<label class="flex flex-col gap-1 text-xs text-gray-500">
++						{$i18n.t('Password')}
++						<input
++							class="rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-800 dark:bg-gray-850"
++							type="password"
++							bind:value={_user.password}
++							autocomplete="new-password"
++							required
++						/>
++					</label>
++				</div>
++
++				<UserProfileFields profile={_user} />
++			{:else}
++				<div>
++					<input
++						id="upload-user-csv-input"
++						hidden
++						bind:files={inputFiles}
++						type="file"
++						accept=".csv,text/csv"
++					/>
++					<button
++						class="w-full rounded-xl border border-dashed py-4 text-center text-sm font-medium hover:bg-gray-100 dark:border-gray-850 dark:hover:bg-gray-850"
++						type="button"
++						on:click={() => document.getElementById('upload-user-csv-input')?.click()}
++					>
++						{inputFiles?.length
++							? `${inputFiles.length} document(s) sélectionné(s)`
++							: 'Cliquez ici pour sélectionner un fichier CSV.'}
++					</button>
++
++					<div class="mt-3 text-xs leading-5 text-gray-500">
++						Le fichier accepte les 4 colonnes historiques puis, dans l’ordre, les 10 champs du
++						profil Oreegami. Les dates utilisent le format <code>AAAA-MM-JJ</code>.
++						<a
++							class="ml-1 underline dark:text-gray-200"
++							href="{WEBUI_BASE_URL}/static/user-import.csv"
++							download>Télécharger le modèle CSV.</a
+ 						>
+-							{$i18n.t('Save')}
+-
+-							{#if loading}
+-								<div class="ml-2 self-center">
+-									<svg
+-										class=" w-4 h-4"
+-										viewBox="0 0 24 24"
+-										fill="currentColor"
+-										xmlns="http://www.w3.org/2000/svg"
+-										><style>
+-											.spinner_ajPY {
+-												transform-origin: center;
+-												animation: spinner_AtaB 0.75s infinite linear;
+-											}
+-											@keyframes spinner_AtaB {
+-												100% {
+-													transform: rotate(360deg);
+-												}
+-											}
+-										</style><path
+-											d="M12,1A11,11,0,1,0,23,12,11,11,0,0,0,12,1Zm0,19a8,8,0,1,1,8-8A8,8,0,0,1,12,20Z"
+-											opacity=".25"
+-										/><path
+-											d="M10.14,1.16a11,11,0,0,0-9,8.92A1.59,1.59,0,0,0,2.46,12,1.52,1.52,0,0,0,4.11,10.7a8,8,0,0,1,6.66-6.61A1.42,1.42,0,0,0,12,2.69h0A1.57,1.57,0,0,0,10.14,1.16Z"
+-											class="spinner_ajPY"
+-										/></svg
+-									>
+-								</div>
+-							{/if}
+-						</button>
+ 					</div>
+-				</form>
++				</div>
++			{/if}
++
++			<div class="flex justify-end pt-4 text-sm font-medium">
++				<button
++					class="flex items-center rounded-full bg-black px-4 py-2 text-white transition hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-black"
++					type="submit"
++					disabled={loading}
++				>
++					{loading ? 'Enregistrement…' : $i18n.t('Save')}
++				</button>
+ 			</div>
+-		</div>
++		</form>
+ 	</div>
+ </Modal>
+-
+-<style>
+-	input::-webkit-outer-spin-button,
+-	input::-webkit-inner-spin-button {
+-		/* display: none; <- Crashes Chrome on hover */
+-		-webkit-appearance: none;
+-		margin: 0; /* <-- Apparently some margin are still there even though it's hidden */
+-	}
+-
+-	.tabs::-webkit-scrollbar {
+-		display: none; /* for Chrome, Safari and Opera */
+-	}
+-
+-	.tabs {
+-		-ms-overflow-style: none; /* IE and Edge */
+-		scrollbar-width: none; /* Firefox */
+-	}
+-
+-	input[type='number'] {
+-		-moz-appearance: textfield; /* Firefox */
+-	}
+-</style>
+diff --git a/src/lib/components/admin/Users/UserList/EditUserModal.svelte b/src/lib/components/admin/Users/UserList/EditUserModal.svelte
+index cec911d..145795c 100644
+--- a/src/lib/components/admin/Users/UserList/EditUserModal.svelte
++++ b/src/lib/components/admin/Users/UserList/EditUserModal.svelte
+@@ -1,15 +1,16 @@
+ <script lang="ts">
+ 	import { toast } from 'svelte-sonner';
+ 	import dayjs from 'dayjs';
+-	import { createEventDispatcher } from 'svelte';
+-	import { onMount, getContext } from 'svelte';
++	import localizedFormat from 'dayjs/plugin/localizedFormat';
++	import { createEventDispatcher, getContext, onMount } from 'svelte';
+ 
+-	import { updateUserById } from '$lib/apis/users';
++	import { updateUserById, type UserUpdateForm } from '$lib/apis/users';
++	import { createUserProfileForm, type UserProfileForm } from '$lib/types/user';
+ 
+ 	import Modal from '$lib/components/common/Modal.svelte';
+-	import localizedFormat from 'dayjs/plugin/localizedFormat';
++	import UserProfileFields from '$lib/components/common/UserProfileFields.svelte';
+ 
+-	const i18n = getContext('i18n');
++	const i18n: any = getContext('i18n');
+ 	const dispatch = createEventDispatcher();
+ 	dayjs.extend(localizedFormat);
+ 
+@@ -17,17 +18,22 @@
+ 	export let selectedUser;
+ 	export let sessionUser;
+ 
+-	let _user = {
+-		profile_image_url: '',
++	let loading = false;
++	let _user: UserUpdateForm & UserProfileForm = {
++		profile_image_url: '/user.png',
+ 		name: '',
+ 		email: '',
+-		password: ''
++		password: '',
++		...createUserProfileForm()
+ 	};
+ 
+ 	const submitHandler = async () => {
++		loading = true;
+ 		const res = await updateUserById(localStorage.token, selectedUser.id, _user).catch((error) => {
+ 			toast.error(`${error}`);
++			return null;
+ 		});
++		loading = false;
+ 
+ 		if (res) {
+ 			dispatch('save');
+@@ -37,27 +43,27 @@
+ 
+ 	onMount(() => {
+ 		if (selectedUser) {
+-			_user = selectedUser;
+-			_user.password = '';
++			_user = {
++				profile_image_url: selectedUser.profile_image_url ?? '/user.png',
++				name: selectedUser.name ?? '',
++				email: selectedUser.email ?? '',
++				password: '',
++				...createUserProfileForm(selectedUser)
++			};
+ 		}
+ 	});
+ </script>
+ 
+-<Modal size="sm" bind:show>
+-	<div>
+-		<div class=" flex justify-between dark:text-gray-300 px-5 py-4">
+-			<div class=" text-lg font-medium self-center">{$i18n.t('Edit User')}</div>
+-			<button
+-				class="self-center"
+-				on:click={() => {
+-					show = false;
+-				}}
+-			>
++<Modal size="lg" bind:show>
++	<div class="max-h-[90dvh] overflow-y-auto">
++		<div class="flex justify-between px-5 py-4 dark:text-gray-300">
++			<div class="self-center text-lg font-medium">{$i18n.t('Edit User')}</div>
++			<button class="self-center" type="button" on:click={() => (show = false)}>
+ 				<svg
+ 					xmlns="http://www.w3.org/2000/svg"
+ 					viewBox="0 0 20 20"
+ 					fill="currentColor"
+-					class="w-5 h-5"
++					class="size-5"
+ 				>
+ 					<path
+ 						d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
+@@ -67,111 +73,76 @@
+ 		</div>
+ 		<hr class="border-gray-100 dark:border-gray-850" />
+ 
+-		<div class="flex flex-col md:flex-row w-full p-5 md:space-x-4 dark:text-gray-200">
+-			<div class=" flex flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
+-				<form
+-					class="flex flex-col w-full"
+-					on:submit|preventDefault={() => {
+-						submitHandler();
+-					}}
+-				>
+-					<div class=" flex items-center rounded-md py-2 px-4 w-full">
+-						<div class=" self-center mr-5">
+-							<img
+-								src={selectedUser.profile_image_url}
+-								class=" max-w-[55px] object-cover rounded-full"
+-								alt="User profile"
+-							/>
+-						</div>
+-
+-						<div>
+-							<div class=" self-center capitalize font-semibold">{selectedUser.name}</div>
+-
+-							<div class="text-xs text-gray-500">
+-								{$i18n.t('Created at')}
+-								{dayjs(selectedUser.created_at * 1000).format('LL')}
+-							</div>
+-						</div>
++		<form
++			class="flex flex-col gap-4 p-5 dark:text-gray-200"
++			on:submit|preventDefault={submitHandler}
++		>
++			<div class="flex items-center rounded-md px-2 py-1">
++				<img
++					src={selectedUser.profile_image_url}
++					class="mr-4 size-14 rounded-full object-cover"
++					alt="Profil utilisateur"
++				/>
++				<div>
++					<div class="font-semibold">{selectedUser.name}</div>
++					<div class="text-xs text-gray-500">
++						{$i18n.t('Created at')}
++						{dayjs(selectedUser.created_at * 1000).format('LL')}
+ 					</div>
++				</div>
++			</div>
+ 
+-					<hr class="border-gray-100 dark:border-gray-850 my-3 w-full" />
+-
+-					<div class=" flex flex-col space-y-1.5">
+-						<div class="flex flex-col w-full">
+-							<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Email')}</div>
+-
+-							<div class="flex-1">
+-								<input
+-									class="w-full rounded-sm py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-800 disabled:text-gray-500 dark:disabled:text-gray-500 outline-hidden"
+-									type="email"
+-									bind:value={_user.email}
+-									autocomplete="off"
+-									required
+-									disabled={_user.id == sessionUser.id}
+-								/>
+-							</div>
+-						</div>
+-
+-						<div class="flex flex-col w-full">
+-							<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Name')}</div>
+-
+-							<div class="flex-1">
+-								<input
+-									class="w-full rounded-sm py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-800 outline-hidden"
+-									type="text"
+-									bind:value={_user.name}
+-									autocomplete="off"
+-									required
+-								/>
+-							</div>
+-						</div>
+-
+-						<div class="flex flex-col w-full">
+-							<div class=" mb-1 text-xs text-gray-500">{$i18n.t('New Password')}</div>
+-
+-							<div class="flex-1">
+-								<input
+-									class="w-full rounded-sm py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-800 outline-hidden"
+-									type="password"
+-									bind:value={_user.password}
+-									autocomplete="new-password"
+-								/>
+-							</div>
+-						</div>
+-					</div>
++			<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
++				<label class="flex flex-col gap-1 text-xs text-gray-500">
++					{$i18n.t('Email')}
++					<input
++						class="rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden disabled:text-gray-500 dark:border-gray-800 dark:bg-gray-850"
++						type="email"
++						bind:value={_user.email}
++						autocomplete="off"
++						required
++						disabled={selectedUser.id === sessionUser.id}
++					/>
++				</label>
++
++				<label class="flex flex-col gap-1 text-xs text-gray-500">
++					Nom d’affichage
++					<input
++						class="rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-800 dark:bg-gray-850"
++						type="text"
++						bind:value={_user.name}
++						autocomplete="off"
++						required
++					/>
++				</label>
++
++				<label class="flex flex-col gap-1 text-xs text-gray-500 sm:col-span-2">
++					{$i18n.t('New Password')}
++					<input
++						class="rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden dark:border-gray-800 dark:bg-gray-850"
++						type="password"
++						bind:value={_user.password}
++						autocomplete="new-password"
++					/>
++				</label>
++			</div>
+ 
+-					<div class="flex justify-end pt-3 text-sm font-medium">
+-						<button
+-							class=" px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-gray-100 transition rounded-lg"
+-							type="submit"
+-						>
+-							{$i18n.t('Save')}
+-						</button>
+-					</div>
+-				</form>
++			<UserProfileFields profile={_user} />
++
++			<p class="text-xs text-gray-500">
++				Les valeurs modifiées ici pourront être remplacées lors de la prochaine synchronisation
++				Airtable.
++			</p>
++
++			<div class="flex justify-end text-sm font-medium">
++				<button
++					class="rounded-full bg-black px-4 py-2 text-white transition hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-black"
++					type="submit"
++					disabled={loading}
++				>
++					{loading ? 'Enregistrement…' : $i18n.t('Save')}
++				</button>
+ 			</div>
+-		</div>
++		</form>
+ 	</div>
+ </Modal>
+-
+-<style>
+-	input::-webkit-outer-spin-button,
+-	input::-webkit-inner-spin-button {
+-		/* display: none; <- Crashes Chrome on hover */
+-		-webkit-appearance: none;
+-		margin: 0; /* <-- Apparently some margin are still there even though it's hidden */
+-	}
+-
+-	.tabs::-webkit-scrollbar {
+-		display: none; /* for Chrome, Safari and Opera */
+-	}
+-
+-	.tabs {
+-		-ms-overflow-style: none; /* IE and Edge */
+-		scrollbar-width: none; /* Firefox */
+-	}
+-
+-	input[type='number'] {
+-		-moz-appearance: textfield; /* Firefox */
+-	}
+-</style>
+diff --git a/src/lib/components/chat/Settings/Account.svelte b/src/lib/components/chat/Settings/Account.svelte
+index e8556ed..aff7719 100644
+--- a/src/lib/components/chat/Settings/Account.svelte
++++ b/src/lib/components/chat/Settings/Account.svelte
+@@ -12,14 +12,17 @@
+ 	import Plus from '$lib/components/icons/Plus.svelte';
+ 	import Tooltip from '$lib/components/common/Tooltip.svelte';
+ 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
++	import UserProfileFields from '$lib/components/common/UserProfileFields.svelte';
++	import { createUserProfileForm } from '$lib/types/user';
+ 
+-	const i18n = getContext('i18n');
++	const i18n: any = getContext('i18n');
+ 
+ 	export let saveHandler: Function;
+ 	export let saveSettings: Function;
+ 
+ 	let profileImageUrl = '';
+ 	let name = '';
++	let profile = createUserProfileForm();
+ 
+ 	let webhookUrl = '';
+ 	let showAPIKeys = false;
+@@ -46,11 +49,14 @@
+ 			});
+ 		}
+ 
+-		const updatedUser = await updateUserProfile(localStorage.token, name, profileImageUrl).catch(
+-			(error) => {
+-				toast.error(`${error}`);
+-			}
+-		);
++		const updatedUser = await updateUserProfile(
++			localStorage.token,
++			name,
++			profileImageUrl,
++			profile
++		).catch((error) => {
++			toast.error(`${error}`);
++		});
+ 
+ 		if (updatedUser) {
+ 			// Get Session User Info
+@@ -75,8 +81,9 @@
+ 	};
+ 
+ 	onMount(async () => {
+-		name = $user?.name;
+-		profileImageUrl = $user?.profile_image_url;
++		name = $user?.name ?? '';
++		profileImageUrl = $user?.profile_image_url ?? '';
++		profile = createUserProfileForm($user);
+ 		webhookUrl = $settings?.notifications?.webhook_url ?? '';
+ 
+ 		APIKey = await getAPIKey(localStorage.token).catch((error) => {
+@@ -245,6 +252,20 @@
+ 					</div>
+ 				</div>
+ 			</div>
++
++			<details class="mt-3 rounded-xl border border-gray-100 dark:border-gray-850">
++				<summary class="cursor-pointer px-3 py-2 text-sm font-medium"> Profil Oreegami </summary>
++				<div class="px-1 pb-2">
++					<UserProfileFields
++						{profile}
++						title="Informations personnelles et parcours"
++						bordered={false}
++					/>
++					<p class="px-3 text-xs text-gray-500">
++						Ces informations peuvent être actualisées automatiquement depuis Airtable.
++					</p>
++				</div>
++			</details>
+ 			{#if $user?.role === 'admin'}
+ 				{#if $config?.features?.enable_user_webhooks}
+ 					<div class="pt-2">
+diff --git a/src/lib/components/common/UserProfileFields.svelte b/src/lib/components/common/UserProfileFields.svelte
+new file mode 100644
+index 0000000..1fcca70
+--- /dev/null
++++ b/src/lib/components/common/UserProfileFields.svelte
+@@ -0,0 +1,91 @@
++<script lang="ts">
++	import type { UserProfileForm } from '$lib/types/user';
++
++	export let profile: UserProfileForm;
++	export let title = 'Profil Oreegami';
++	export let bordered = true;
++
++	const inputClass =
++		'w-full rounded-lg border border-gray-200 bg-transparent px-3 py-2 text-sm outline-hidden focus:border-gray-400 dark:border-gray-800 dark:bg-gray-850 dark:focus:border-gray-600';
++</script>
++
++<fieldset class:border={bordered} class="rounded-xl border-gray-100 p-3 dark:border-gray-850">
++	<legend class="px-1 text-sm font-medium text-gray-700 dark:text-gray-200">{title}</legend>
++
++	<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
++		<label class="flex flex-col gap-1 text-xs text-gray-500">
++			Nom
++			<input
++				class={inputClass}
++				type="text"
++				bind:value={profile.last_name}
++				autocomplete="family-name"
++			/>
++		</label>
++
++		<label class="flex flex-col gap-1 text-xs text-gray-500">
++			Prénom
++			<input
++				class={inputClass}
++				type="text"
++				bind:value={profile.first_name}
++				autocomplete="given-name"
++			/>
++		</label>
++
++		<label class="flex flex-col gap-1 text-xs text-gray-500">
++			Genre
++			<input class={inputClass} type="text" bind:value={profile.gender} autocomplete="sex" />
++		</label>
++
++		<label class="flex flex-col gap-1 text-xs text-gray-500">
++			E-mail Oreegami Education
++			<input
++				class={inputClass}
++				type="email"
++				bind:value={profile.oreegami_edu_email}
++				autocomplete="email"
++			/>
++		</label>
++
++		<label class="flex flex-col gap-1 text-xs text-gray-500">
++			Région du campus
++			<input class={inputClass} type="text" bind:value={profile.campus_region} />
++		</label>
++
++		<label class="flex flex-col gap-1 text-xs text-gray-500">
++			Session
++			<input class={inputClass} type="text" bind:value={profile.session} />
++		</label>
++
++		<label class="flex flex-col gap-1 text-xs text-gray-500 sm:col-span-2">
++			Titre RNCP
++			<input class={inputClass} type="text" bind:value={profile.rncp_title} />
++		</label>
++
++		<label class="flex flex-col gap-1 text-xs text-gray-500 sm:col-span-2">
++			Entreprise d’alternance
++			<input class={inputClass} type="text" bind:value={profile.apprenticeship_company} />
++		</label>
++
++		<label class="flex flex-col gap-1 text-xs text-gray-500">
++			Début de l’alternance
++			<input
++				class={inputClass}
++				type="date"
++				bind:value={profile.apprenticeship_start_date}
++				max={profile.apprenticeship_end_date || undefined}
++			/>
++		</label>
++
++		<label class="flex flex-col gap-1 text-xs text-gray-500">
++			Fin de l’alternance
++			<input
++				class={inputClass}
++				type="date"
++				bind:value={profile.apprenticeship_end_date}
++				min={profile.apprenticeship_start_date || undefined}
++			/>
++		</label>
++	</div>
++</fieldset>
+diff --git a/src/lib/stores/index.ts b/src/lib/stores/index.ts
+index 87f48c7..29b37be 100644
+--- a/src/lib/stores/index.ts
++++ b/src/lib/stores/index.ts
+@@ -2,6 +2,7 @@ import { APP_NAME } from '$lib/constants';
+ import { type Writable, writable } from 'svelte/store';
+ import type { ModelConfig } from '$lib/apis';
+ import type { Banner } from '$lib/types';
++import type { UserProfileFields } from '$lib/types/user';
+ import type { Socket } from 'socket.io-client';
+ 
+ import emojiShortCodes from '$lib/emoji-shortcodes.json';
+@@ -226,7 +227,7 @@ type PromptSuggestion = {
+ 	title: [string, string];
+ };
+ 
+-type SessionUser = {
++type SessionUser = UserProfileFields & {
+ 	id: string;
+ 	email: string;
+ 	name: string;
+diff --git a/src/lib/types/user.test.ts b/src/lib/types/user.test.ts
+new file mode 100644
+index 0000000..2acdf78
+--- /dev/null
++++ b/src/lib/types/user.test.ts
+@@ -0,0 +1,42 @@
++import { describe, expect, it } from 'vitest';
++
++import { createUserProfileForm, createUserProfilePayload } from './user';
++
++describe('user profile helpers', () => {
++	it('creates form-safe empty strings from nullable API values', () => {
++		expect(
++			createUserProfileForm({
++				last_name: 'Dupont',
++				first_name: null
++			})
++		).toMatchObject({
++			last_name: 'Dupont',
++			first_name: '',
++			oreegami_edu_email: '',
++			apprenticeship_start_date: ''
++		});
++	});
++
++	it('trims text, lowercases the Oreegami email and sends empty values as null', () => {
++		expect(
++			createUserProfilePayload({
++				last_name: '  Dupont ',
++				first_name: '   ',
++				oreegami_edu_email: ' JEAN.DUPONT@OREEGAMI-EDU.COM ',
++				apprenticeship_start_date: '2026-09-01',
++				apprenticeship_end_date: ''
++			})
++		).toEqual({
++			last_name: 'Dupont',
++			first_name: null,
++			gender: null,
++			oreegami_edu_email: 'jean.dupont@oreegami-edu.com',
++			campus_region: null,
++			session: null,
++			rncp_title: null,
++			apprenticeship_company: null,
++			apprenticeship_start_date: '2026-09-01',
++			apprenticeship_end_date: null
++		});
++	});
++});
+diff --git a/src/lib/types/user.ts b/src/lib/types/user.ts
+new file mode 100644
+index 0000000..232c068
+--- /dev/null
++++ b/src/lib/types/user.ts
+@@ -0,0 +1,62 @@
++export type UserProfileFields = {
++	last_name?: string | null;
++	first_name?: string | null;
++	gender?: string | null;
++	oreegami_edu_email?: string | null;
++	campus_region?: string | null;
++	session?: string | null;
++	rncp_title?: string | null;
++	apprenticeship_company?: string | null;
++	apprenticeship_start_date?: string | null;
++	apprenticeship_end_date?: string | null;
++};
++
++export type UserProfileForm = {
++	[K in keyof Required<UserProfileFields>]: string;
++};
++
++export const USER_PROFILE_KEYS: (keyof UserProfileFields)[] = [
++	'last_name',
++	'first_name',
++	'gender',
++	'oreegami_edu_email',
++	'campus_region',
++	'session',
++	'rncp_title',
++	'apprenticeship_company',
++	'apprenticeship_start_date',
++	'apprenticeship_end_date'
++];
++
++export const createUserProfileForm = (profile: UserProfileFields = {}): UserProfileForm => ({
++	last_name: profile.last_name ?? '',
++	first_name: profile.first_name ?? '',
++	gender: profile.gender ?? '',
++	oreegami_edu_email: profile.oreegami_edu_email ?? '',
++	campus_region: profile.campus_region ?? '',
++	session: profile.session ?? '',
++	rncp_title: profile.rncp_title ?? '',
++	apprenticeship_company: profile.apprenticeship_company ?? '',
++	apprenticeship_start_date: profile.apprenticeship_start_date ?? '',
++	apprenticeship_end_date: profile.apprenticeship_end_date ?? ''
++});
++
++export const createUserProfilePayload = (
++	profile: UserProfileFields
++): Required<UserProfileFields> => {
++	const normalize = (value?: string | null) => value?.trim() || null;
++	const oreegamiEmail = normalize(profile.oreegami_edu_email);
++
++	return {
++		last_name: normalize(profile.last_name),
++		first_name: normalize(profile.first_name),
++		gender: normalize(profile.gender),
++		oreegami_edu_email: oreegamiEmail?.toLowerCase() ?? null,
++		campus_region: normalize(profile.campus_region),
++		session: normalize(profile.session),
++		rncp_title: normalize(profile.rncp_title),
++		apprenticeship_company: normalize(profile.apprenticeship_company),
++		apprenticeship_start_date: normalize(profile.apprenticeship_start_date),
++		apprenticeship_end_date: normalize(profile.apprenticeship_end_date)
++	};
++};
+diff --git a/src/routes/auth/+page.svelte b/src/routes/auth/+page.svelte
+index 1922c9a..41e766a 100644
+--- a/src/routes/auth/+page.svelte
++++ b/src/routes/auth/+page.svelte
+@@ -15,6 +15,8 @@
+ 
+ 	import Spinner from '$lib/components/common/Spinner.svelte';
+ 	import OnBoarding from '$lib/components/OnBoarding.svelte';
++	import UserProfileFields from '$lib/components/common/UserProfileFields.svelte';
++	import { createUserProfileForm } from '$lib/types/user';
+ 
+ 	let loaded = false;
+ 	let passwordVisible = false;
+@@ -24,6 +26,7 @@
+ 	let name = '';
+ 	let email = '';
+ 	let password = '';
++	let profile = createUserProfileForm();
+ 
+ 	let ldapUsername = '';
+ 
+@@ -68,15 +71,19 @@
+ 	};
+ 
+ 	const signUpHandler = async () => {
+-		const sessionUser = await userSignUp(name, email, password, generateInitialsImage(name)).catch(
+-			(error) => {
++		const sessionUser = await userSignUp(
++			name,
++			email,
++			password,
++			generateInitialsImage(name),
++			profile
++		).catch((error) => {
+ 				showAuthError(
+ 					error,
+ 					'Création du compte impossible. Vérifiez les informations saisies.'
+ 				);
+ 				return null;
+-			}
+-		);
++			});
+ 
+ 		await setSessionUser(sessionUser);
+ 	};
+@@ -349,6 +356,21 @@
+ 										{/if}
+ 									</div>
+ 
++									{#if mode === 'signup'}
++										<details
++											class="profile-details"
++										>
++											<summary>Compléter mon profil Oreegami</summary>
++											<div class="profile-fields">
++												<UserProfileFields
++													{profile}
++													title="Informations personnelles et parcours"
++													bordered={false}
++												/>
++											</div>
++										</details>
++									{/if}
++
+ 									<button class="primary-button" type="submit">
+ 										{#if mode === 'ldap'}
+ 											Se connecter
+@@ -747,6 +769,26 @@
+ 		text-decoration: underline;
+ 	}
+ 
++	.profile-details {
++		border: 1px solid var(--oreegami-ink-10);
++		border-radius: 10px;
++		background: #fff;
++		text-align: left;
++	}
++
++	.profile-details summary {
++		padding: 12px 14px;
++		cursor: pointer;
++		font-size: 14px;
++		font-weight: 600;
++	}
++
++	.profile-fields {
++		max-height: 52vh;
++		overflow-y: auto;
++		padding: 0 8px 12px;
++	}
++
+ 	.primary-button {
+ 		display: flex;
+ 		width: 100%;
+diff --git a/static/static/user-import.csv b/static/static/user-import.csv
+new file mode 100644
+index 0000000..1962106
+--- /dev/null
++++ b/static/static/user-import.csv
+@@ -0,0 +1,2 @@
++Nom d'affichage,Email,Mot de passe,Rôle,Nom,Prénom,Genre,E-mail Oreegami Education,Région du campus,Session,Titre RNCP,Entreprise d'alternance,Début alternance,Fin alternance
++Jean Dupont,jean.dupont@example.com,ChangeMe123!,user,Dupont,Jean,Homme,jean.dupont@oreegami-edu.com,Occitanie,2026,Expert en intelligence artificielle,Entreprise Exemple,2026-09-01,2027-08-31
+-- 
+2.51.1
+
