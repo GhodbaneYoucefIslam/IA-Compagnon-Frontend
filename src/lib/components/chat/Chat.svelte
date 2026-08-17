@@ -1441,6 +1441,33 @@
 						responseMessageIds[`${modelId}-${modelIdx ? modelIdx : _modelIdx}`];
 					let responseMessage = _history.messages[responseMessageId];
 
+					// Include both oreegami learner profile information as well as chat memories in context
+
+					let learnerContext = '';
+					if ($user) {
+						const firstName = $user.first_name || '';
+						const lastName = $user.last_name || '';
+						const fullName = `${firstName} ${lastName}`.trim() || $user.name || 'Non spécifié';
+						const gender = $user.gender || 'Non spécifié';
+						const campus = $user.campus_region || 'Non spécifié';
+						const session = $user.session || 'Non spécifiée';
+						const rncpTitle = $user.rncp_title || 'Non spécifié';
+						const company = $user.apprenticeship_company || 'Non spécifiée';
+						const startDate = $user.apprenticeship_start_date || 'Non spécifiée';
+						const endDate = $user.apprenticeship_end_date || 'Non spécifiée';
+
+						learnerContext = [
+							`[Profil Apprenant]`,
+							`Nom : ${fullName}`,
+							`Genre : ${gender}`,
+							`Campus / Région : ${campus}`,
+							`Session : ${session}`,
+							`Titre RNCP : ${rncpTitle}`,
+							`Entreprise d'alternance : ${company}`,
+							`Période d'alternance : ${startDate} au ${endDate}`
+						].join('\n');
+					}
+
 					let userContext = null;
 					if ($settings?.memory ?? false) {
 						if (userContext === null) {
@@ -1463,7 +1490,11 @@
 							}
 						}
 					}
-					responseMessage.userContext = userContext;
+
+					// Combine the Learner Profile and the Memories
+					const combinedContext = [learnerContext, userContext].filter(Boolean).join('\n\n');
+
+					responseMessage.userContext = combinedContext.length > 0 ? combinedContext : null;
 
 					const chatEventEmitter = await getChatEventEmitter(model.id, _chatId);
 
