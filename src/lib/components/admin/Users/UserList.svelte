@@ -485,28 +485,40 @@
 					</td>
 
 					<td class="px-3 py-1">
-						<div>{user.campus_region ?? '—'}</div>
-						{#if user.session}
-							<div class="text-[11px] text-gray-500">Session {user.session}</div>
+						{#if user.role === 'admin'}
+							<span class="text-gray-400">—</span>
+						{:else}
+							<div>{user.campus_region ?? '—'}</div>
+							{#if user.session}
+								<div class="text-[11px] text-gray-500">Session {user.session}</div>
+							{/if}
 						{/if}
 					</td>
 
 					<td class="max-w-52 whitespace-normal px-3 py-1">
-						{user.rncp_title ?? '—'}
+						{#if user.role === 'admin'}
+							<span class="text-gray-400">—</span>
+						{:else}
+							{user.rncp_title ?? '—'}
+						{/if}
 					</td>
 
 					<td class="max-w-56 whitespace-normal px-3 py-1">
-						<div>{user.apprenticeship_company ?? '—'}</div>
-						{#if user.apprenticeship_start_date || user.apprenticeship_end_date}
-							<div class="text-[11px] text-gray-500">
-								{user.apprenticeship_start_date
-									? dayjs(user.apprenticeship_start_date).format('L')
-									: '…'}
-								→
-								{user.apprenticeship_end_date
-									? dayjs(user.apprenticeship_end_date).format('L')
-									: '…'}
-							</div>
+						{#if user.role === 'admin'}
+							<span class="text-gray-400">—</span>
+						{:else}
+							<div>{user.apprenticeship_company ?? '—'}</div>
+							{#if user.apprenticeship_start_date || user.apprenticeship_end_date}
+								<div class="text-[11px] text-gray-500">
+									{user.apprenticeship_start_date
+										? dayjs(user.apprenticeship_start_date).format('L')
+										: '…'}
+									→
+									{user.apprenticeship_end_date
+										? dayjs(user.apprenticeship_end_date).format('L')
+										: '…'}
+								</div>
+							{/if}
 						{/if}
 					</td>
 

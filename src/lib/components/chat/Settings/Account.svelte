@@ -260,6 +260,7 @@
 						{profile}
 						title="Informations personnelles et parcours"
 						bordered={false}
+						role={$user.role}
 					/>
 					<p class="px-3 text-xs text-gray-500">
 						Ces informations peuvent être actualisées automatiquement depuis Airtable.

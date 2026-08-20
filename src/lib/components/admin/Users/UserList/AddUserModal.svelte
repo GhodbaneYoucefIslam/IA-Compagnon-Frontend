@@ -227,7 +227,7 @@
 					</label>
 				</div>
 
-				<UserProfileFields profile={_user} />
+				<UserProfileFields profile={_user} role={_user.role} />
 			{:else}
 				<div>
 					<input

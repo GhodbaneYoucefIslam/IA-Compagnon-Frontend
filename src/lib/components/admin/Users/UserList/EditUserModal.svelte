@@ -127,7 +127,7 @@
 				</label>
 			</div>
 
-			<UserProfileFields profile={_user} />
+			<UserProfileFields profile={_user} role={selectedUser.role} />
 
 			<p class="text-xs text-gray-500">
 				Les valeurs modifiées ici pourront être remplacées lors de la prochaine synchronisation

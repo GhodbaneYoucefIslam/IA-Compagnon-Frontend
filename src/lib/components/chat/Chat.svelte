@@ -1445,27 +1445,39 @@
 
 					let learnerContext = '';
 					if ($user) {
+						// 1. Extract universal fields for ALL users (including admins)
 						const firstName = $user.first_name || '';
 						const lastName = $user.last_name || '';
 						const fullName = `${firstName} ${lastName}`.trim() || $user.name || 'Non spécifié';
 						const gender = $user.gender || 'Non spécifié';
-						const campus = $user.campus_region || 'Non spécifié';
-						const session = $user.session || 'Non spécifiée';
-						const rncpTitle = $user.rncp_title || 'Non spécifié';
-						const company = $user.apprenticeship_company || 'Non spécifiée';
-						const startDate = $user.apprenticeship_start_date || 'Non spécifiée';
-						const endDate = $user.apprenticeship_end_date || 'Non spécifiée';
 
-						learnerContext = [
-							`[Profil Apprenant]`,
-							`Nom : ${fullName}`,
-							`Genre : ${gender}`,
-							`Campus / Région : ${campus}`,
-							`Session : ${session}`,
-							`Titre RNCP : ${rncpTitle}`,
-							`Entreprise d'alternance : ${company}`,
-							`Période d'alternance : ${startDate} au ${endDate}`
-						].join('\n');
+						if ($user.role === 'admin') {
+							// 2a. Minimal Context for Admins
+							learnerContext = [
+								`[Profil]`,
+								`Nom : ${fullName}`,
+								`Genre : ${gender}`
+							].join('\n');
+						} else {
+							// 2b. Full Context for Oreegami Learners
+							const campus = $user.campus_region || 'Non spécifié';
+							const session = $user.session || 'Non spécifiée';
+							const rncpTitle = $user.rncp_title || 'Non spécifié';
+							const company = $user.apprenticeship_company || 'Non spécifiée';
+							const startDate = $user.apprenticeship_start_date || 'Non spécifiée';
+							const endDate = $user.apprenticeship_end_date || 'Non spécifiée';
+
+							learnerContext = [
+								`[Profil Apprenant]`,
+								`Nom : ${fullName}`,
+								`Genre : ${gender}`,
+								`Campus / Région : ${campus}`,
+								`Session : ${session}`,
+								`Titre RNCP : ${rncpTitle}`,
+								`Entreprise d'alternance : ${company}`,
+								`Période d'alternance : ${startDate} au ${endDate}`
+							].join('\n');
+						}
 					}
 
 					let userContext = null;
